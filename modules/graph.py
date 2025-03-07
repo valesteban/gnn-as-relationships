@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as  np
 from random import sample
 import bz2
+import yaml
+import os
 
 
 
@@ -19,6 +21,8 @@ class Graph:
         self.dataset_dic = None
 
         self.path = path
+        self.name_edges_file = None
+        self.name_nodes_file = None
 
     def read_from_relationship_edgelist(self, filename:str,type:str,out_file="edges.csv"):
         """
@@ -90,6 +94,9 @@ class Graph:
             self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.MultiDiGraph())
         else:
             self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.Graph())
+        
+        # Guardamos nombre de archivo de aristas
+        self.name_edges_file = out_file
 
     def features_nodes(self,features_filename, list_feat = "all",filename_out="nodes.csv"):
         """
@@ -145,7 +152,10 @@ class Graph:
             w = f'{str(node)},"{node_features}"\n'
             f.write(w)
         
-        f.close()        
+        f.close()   
+
+        # Guardamos nombre de archivo de nodos
+        self.name_nodes_file = filename_out     
 
     def only_degree_features_nodes(self,filename_out="nodes.csv"):
         """
@@ -202,6 +212,8 @@ class Graph:
         if self.debug:
             print(f"[SAVE IN: {self.path+'nodes.csv'}]")
 
+        # Guardamos nombre de archivo de nodos
+        self.name_nodes_file = filename_out
 
     def remove_nodes_degree(self, degree,filename_out="edges.csv"):
         """
@@ -231,4 +243,27 @@ class Graph:
 
         if self.debug:
             print(self.nx_graph)
+
+    def create_meta_file(self):
+        """
+        Crea un archivo meta.yaml con la información del grafo.
+
+        Parameters:
+            graph_type (str): Tipo de grafo (DiGraph, MultiDiGraph).
+            features_type (str): Tipo de características (AllFeatures, DegreeFeatures).
+
+        Returns:
+            None
+        """
+        
+        dataset_name = os.path.basename(os.path.normpath(self.path))
+
+        meta_data = {
+            'dataset_name': dataset_name,
+            'edge_data': [{'file_name': self.name_edges_file}],
+            'node_data': [{'file_name': self.name_nodes_file}]
+        }
+
+        with open(os.path.join(self.path, 'meta.yaml'), 'w') as f:
+            yaml.dump(meta_data, f)
 

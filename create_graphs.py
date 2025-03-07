@@ -18,6 +18,11 @@ def create_graph(graph_type, dataset_path, relationships_file, features_file, fe
         Graph: Objeto de la clase Graph con el grafo creado y configurado.
     """
 
+    # Creamos el directorio si no existe
+    print('[PATH CREATE]',dataset_path)
+    if not os.path.exists(dataset_path):
+        os.makedirs(dataset_path)
+
     graph = Graph(dataset_path, debug=debug)
 
     # Creamos el grafo a partir de la lista de aristas de CAIDA AS Relationships
@@ -36,7 +41,12 @@ def create_graph(graph_type, dataset_path, relationships_file, features_file, fe
     if remove_degree:
         for _ in range(remove_degree):
             graph.remove_nodes_degree(1)
+    
+    graph.create_meta_file()
+    print("META CREADO ...")
+    
     print("PROCESO COMPLETADO")
+
     return graph
 
 
@@ -44,7 +54,7 @@ def create_graph(graph_type, dataset_path, relationships_file, features_file, fe
 # Definimos las rutas de los archivos
 base_path = os.getcwd() + "/data/"
 relationships_file = base_path + "CAIDA_AS_Relationships/Serial_2/20220701.as-rel2.txt.bz2"
-features_file = base_path + "GNN_INTERNET_DATA/node_features.csv"
+features_file = base_path + "/node_features.csv"
 
 # Definimos las listas de features
 LIST_FEATURES_NO_CATEG = ['ASN', 'AS_rank_numberAsns', 'AS_rank_numberPrefixes', 'AS_rank_numberAddresses', 'AS_rank_total', 'AS_rank_customer',
@@ -62,30 +72,34 @@ list_feat = LIST_FEATURES_NO_CATEG + LIST_FEATURES_CATEG
 # Casos
 
 # Caso 1: Creación de un grafo dirigido (DiGraph)
+path = base_path + "DGL_Graph/DiGraph_AllFeatures/"
 create_graph("DiGraph", 
-             base_path + "DGL_Graph/MYCODEDiGraph/", 
+             path, 
              relationships_file, 
              features_file, 
              remove_degree=3)
 
 # Caso 2: Creación de un grafo dirigido con multiples aristas por nodo (MultiDiGraph)
+path = base_path + "DGL_Graph/MultiDiGraph_AllFeatures/"
 create_graph("MultiDiGraph", 
-             base_path + "DGL_Graph/MYCODEMultiDiGraph/", 
+             path, 
              relationships_file, 
              features_file, 
              remove_degree=3)
 
 # Caso 3: Creación de un grafo dirigido (DiGraph) donde los atributos son unicamente el grado in y out de los nodos
+path = base_path + "DGL_Graph/DiGraph_DegreeFeatures/"
 create_graph("DiGraph", 
-             base_path + "DGL_Graph/MYCODEDiGraphDegree/", 
+             path, 
              relationships_file, 
              features_file = 'node_degrees', 
              feature_list=list_feat, 
              remove_degree=3)
 
 # Caso 4: Creación de un grafo dirigido con multiples aristas por nodo (MultiDiGraph) donde los atributos son unicamente el grado in y out de los nodos
+path = base_path + "DGL_Graph/MultiDiGraph_DegreeFeatures/"
 create_graph("MultiDiGraph", 
-             base_path + "DGL_Graph/MYCODEMultirouteviews/DiGraphDegree/", 
+             path, 
              relationships_file, 
              features_file = 'node_degrees', 
              remove_degree=3)
