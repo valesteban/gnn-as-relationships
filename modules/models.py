@@ -6,10 +6,10 @@ import dgl
 import torch
 
 class ModelGCN(nn.Module):
-    def __init__(self, in_feats, h_feats, num_classes):
+    def __init__(self, in_feats, h_feats, n_classes):
         super(ModelGCN, self).__init__()
         self.conv1 = GraphConv(in_feats, h_feats, allow_zero_in_degree=True)
-        self.conv2 = GraphConv(h_feats, num_classes,allow_zero_in_degree=True)
+        self.conv2 = GraphConv(h_feats, n_classes,allow_zero_in_degree=True)
 
     def forward(self, g, in_feat):
         h = self.conv1(g, in_feat)
@@ -22,14 +22,14 @@ class GCN(nn.Module):
     """
     Con droput
     """
-    def __init__(self, in_size, hid_size, out_size):
+    def __init__(self, in_feats, h_feats, n_classes):
         super().__init__()
         self.layers = nn.ModuleList()
         # two-layer GCN
         self.layers.append(
-            GraphConv(in_size, hid_size, activation=F.relu, allow_zero_in_degree=True)
+            GraphConv(in_feats, h_feats, activation=F.relu, allow_zero_in_degree=True)
         )
-        self.layers.append(GraphConv(hid_size, out_size,allow_zero_in_degree=True))
+        self.layers.append(GraphConv(h_feats, n_classes,allow_zero_in_degree=True))
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, g, features):
@@ -41,10 +41,10 @@ class GCN(nn.Module):
         return h
 
 class ModelGraphSAGE(nn.Module):
-    def __init__(self, in_feats, h_feats,out_feats):
+    def __init__(self, in_feats, h_feats,n_classes):
         super(ModelGraphSAGE, self).__init__()
         self.conv1 = SAGEConv(in_feats, h_feats, 'mean')
-        self.conv2 = SAGEConv(h_feats, out_feats, 'mean')
+        self.conv2 = SAGEConv(h_feats, n_classes, 'mean')
 
     def forward(self, g, in_feat):
         h = self.conv1(g, in_feat)
@@ -57,11 +57,11 @@ class GraphSAGE(nn.Module):
     """
     Con droput
     """
-    def __init__(self, in_feats, n_hidden, n_classes):
+    def __init__(self, in_feats, h_feats, num_classes):
         super().__init__()
         self.layers = nn.ModuleList()
-        self.layers.append(SAGEConv(in_feats, n_hidden, "mean"))
-        self.layers.append(SAGEConv(n_hidden, n_classes, "mean"))
+        self.layers.append(SAGEConv(in_feats, h_feats, "mean"))
+        self.layers.append(SAGEConv(h_feats, num_classes, "mean"))
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, sg, x):
