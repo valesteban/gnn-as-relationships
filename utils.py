@@ -142,3 +142,41 @@ def plot_training(case_name,gnn,train_error,training_values_acc,val_error,valida
 
     # Mostrar el gráfico
     plt.show()
+
+def calculate_metrics(predicted_scores,true_values , threshold=None):
+    """
+    Funcion que calcula la precision y accuracy para los casos en que se retorna un unico valor flotante como regresion o
+    cuando se retorn un vector con las probabilidades de que sean la clase 2especificadqa por la pposicion del vector
+    
+    Parameters:
+        - predicted_scores: Lista con valores finales predichos por el modelo para conjunto de entrenamiento.
+        - true_values: Lista con valores reales para el conjunto de entrenamiento.
+    """
+    
+    # Convertir a numpy arrays
+    # predicted_scores = np.concatenate(predicted_scores, axis=0)
+    # print("[PREDICTED SCORES]",predicted_scores,type(predicted_scores))
+    # true_values = np.concatenate(true_values, axis=0)
+    # print("[TRUE VALUES]",true_values,type(true_values))
+
+    if  threshold is not None:
+      # Transformamos a 1 | 0 segun el threshold
+      print("[PREDICTED SCORES]",predicted_scores,type(predicted_scores))
+      predicted_scores = (predicted_scores > threshold).astype(int)
+
+    conf_matrix = confusion_matrix(true_values, predicted_scores)
+    report = classification_report(true_values, predicted_scores, digits=4)
+     
+
+    # Graficar la matriz de confusión
+    plt.figure()
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+    plt.xlabel('Predicted Labels')
+    plt.ylabel('True Labels')
+    plt.title('Confusion Matrix')
+    plt.show()
+
+    print("Classification Report:\n")
+    print(report)  
+    
+    return report
