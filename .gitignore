@@ -181,3 +181,4 @@ data/*
 
 # Resultados
 *.csv
+*.pkl
