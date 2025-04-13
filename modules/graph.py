@@ -1,4 +1,5 @@
 import networkx as nx
+import dgl
 import pandas as pd
 import numpy as  np
 from random import sample
@@ -8,23 +9,25 @@ import os
 
 
 
+
 class Graph:
-    def __init__(self,path, debug = False):
+    def __init__(self,dataset_graph_path ,max_paths,debug = False):
         """
         Constructor de la clase Graph.
         Inicializa la variable self.graph a None, que más tarde se utilizará para almacenar el grafo.
         """
 
         self.debug = debug
+
         self.nx_graph = None
-        
-        self.dataset_dic = None
 
-        self.path = path
-        self.name_edges_file = None
-        self.name_nodes_file = None
+        self.data_path = dataset_graph_path
 
-    def read_from_relationship_edgelist(self, filename:str,type:str,out_file="edges.csv"):
+        name_edges_file = ""
+        name_nodes_file = ""
+        self.max_paths = max_paths
+
+    def create_graph_from_caida(self, filename:str,type:str, filename_out="edges.csv"):
         """
         Crea archivo edges.csv apartir de dataset CAIDA AS Relationships. 
         Lee un grafo desde un archivo de lista de aristas (edgelist) y lo almacena en self.graph.
@@ -42,6 +45,7 @@ class Graph:
 
         nx_graph = nx.Graph()
 
+
         with bz2.open(filename, "rb") as f:
             data = f.read()
             lines = data.decode().splitlines()
@@ -49,7 +53,12 @@ class Graph:
             tor_dataset = []
             labels = []
             
-            for line in lines:
+            for count, line in enumerate(lines):
+
+                # Parar cuando se cumpla maximo de bgp paths indicado
+                if count == self.max_paths:
+                    break
+                
 
                 first_char = line[0]
 
@@ -87,16 +96,69 @@ class Graph:
         df_edges['Relationship'] = labels
 
         # Creamoss archivo edges.csv
-        df_edges.to_csv(self.path+"edges.csv", index=False)
+        df_edges.to_csv(self.data_path+"edges.csv", index=False)
+        self.name_edges_file = filename_out
+
+
+        # Creamoss archivo edges.csv
         if type == "DiGraph":
             self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.DiGraph())
         elif type == "MultiDiGraph":
             self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.MultiDiGraph())
         else:
             self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.Graph())
+                
+        if self.debug:
+                print('[NX Graph]: ',self.nx_graph)
+
+    def create_topology_from_ribs(self, rib_filename:str,type:str ,filename_out="edges.csv"):
+
+        # Creamos un grafo dirigido
+        if type == "DiGraph":
+            self.nx_graph = nx.DiGraph()
+        elif type == "MultiDiGraph":
+            self.nx_graph = nx.MultiDiGraph()
+
+        tor_dataset = []
+
+        # Abrimos el archivo con las rutas BGP
+        with open(rib_filename, "r") as archivo:
+            for count,linea in enumerate(archivo):
+
+                # Parar cuando se cumpla maximo de bgp paths indicado
+                if count == self.max_paths:
+                    break
+                
+                # Saltar líneas vacías
+                if not linea.strip():
+                    continue
+
+                # Separar los números de AS y convertirlos a enteros
+                as_list = linea.strip().split("|")
+                as_list = [int(asn) for asn in as_list]
+
+                # Recorrer la lista y agregar conexiones entre AS consecutivos
+                for i in range(len(as_list) - 1):
+                    origen = as_list[i]
+                    destino = as_list[i + 1]
+                    self.nx_graph.add_edge(origen, destino)
+                    if type == "DiGraph":
+                        tor_dataset.append(np.asarray([origen, destino]))
+                    elif type == "MultiDiGraph":
+                        tor_dataset.append(np.asarray([origen, destino]))
+                        tor_dataset.append(np.asarray([destino, origen]))
+
+        # Creamos DataFrame
+        df_edges = pd.DataFrame(tor_dataset, columns=["src_id", "dst_id"])
+
+        # Creamoss archivo edges.csv
+        df_edges.to_csv(self.data_path+"edges.csv", index=False)
+        self.name_edges_file = filename_out
+        print("[ARCHIVO EDGES.CSV CREADO]")
+
+        if self.debug:
+                    print('[NX Graph]: ',self.nx_graph)
         
-        # Guardamos nombre de archivo de aristas
-        self.name_edges_file = out_file
 
     def features_nodes(self,features_filename, list_feat = "all",filename_out="nodes.csv"):
         """
@@ -113,7 +175,7 @@ class Graph:
         Returns:
             None
         """
-                
+        
         # Lee el archivo de características
         features = pd.read_csv(features_filename)
         no_cat_attr = []
@@ -136,26 +198,34 @@ class Graph:
                 
             # Filtrar el DataFrame para obtener solo columnas seleccionadas
             features = features[selected_columns]
-
-        # Crea el archivo nodes.csv
-        f = open(self.path + filename_out, "w")
         
+        # Crea el archivo nodes.csv
+        f = open(self.data_path + filename_out, "w")
         # Agrega los headers
         headers = "node_id,feat\n"
         f.write(headers)
 
         # Por cada nodo en la topología, lo agrego en el archivo nodes.csv con sus features
+        attrs = {}
         for node in self.nx_graph.nodes():
             # Filtra las filas correspondientes al nodo y obtiene los features seleccionados
             node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
-            node_features = ', '.join([str(feature) for feature in node_features])
+            node_features = ', '.join([str(feature) for feature in node_features]) 
             w = f'{str(node)},"{node_features}"\n'
             f.write(w)
+            # Guardamos los features como diccionario para agregarlos al grafo si se desea
+            attrs[node] = {'features': node_features}
         
-        f.close()   
+        f.close()
+        self.name_nodes_file = filename_out
 
-        # Guardamos nombre de archivo de nodos
-        self.name_nodes_file = filename_out     
+        # Agregamos attrinbutos a los nodos 
+        nx.set_node_attributes(self.nx_graph, attrs)
+        print("[bbbbbbbbbbbbbbbbbbbbbb]")
+
+
+        if self.debug:
+            print('[NX Graph]: ',self.nx_graph)
 
     def only_degree_features_nodes(self,filename_out="nodes.csv"):
         """
@@ -170,7 +240,7 @@ class Graph:
         """
 
         # Creo archivo
-        f = open(self.path + filename_out,"w")
+        f = open(self.data_path + filename_out,"w")
         
         # Agregamos headers
         headers = "node_id,feat\n"
@@ -200,7 +270,7 @@ class Graph:
         df['out_degree'] = df['out_degree'] / max_abs_value
 
         # Guardar datos normalizados en nodes.csv
-        with open(self.path + filename_out, "w") as f:
+        with open(self.data_path + filename_out, "w") as f:
             # Agregamos headers
             headers = "node_id,feat\n"
             f.write(headers)
@@ -210,7 +280,7 @@ class Graph:
                 node_features = f"{row['in_degree']}, {row['out_degree']}"
                 f.write(f'{row["node_id"]},"{node_features}"\n')
         if self.debug:
-            print(f"[SAVE IN: {self.path+'nodes.csv'}]")
+            print(f"[SAVE IN: {self.data_path+'nodes.csv'}]")
 
         # Guardamos nombre de archivo de nodos
         self.name_nodes_file = filename_out
@@ -232,17 +302,24 @@ class Graph:
                 list_nodes_remove.append(node)
         
         self.nx_graph.remove_nodes_from(list_nodes_remove)
-
+        
         # Creamos el nuevo edges.csv
         edge_list =  self.nx_graph.edges.data()
+
+        # Crear DataFrame con manejo de casos sin atributos de aristas
         df_edges = pd.DataFrame(
-            [(u, v, data['Relationship']) for u, v, data in edge_list],
+            [
+                (u, v, data.get('Relationship', None))  # Usar .get() para manejar la ausencia del atributo
+                for u, v, data in edge_list
+            ],
             columns=['src_id', 'dst_id', 'Relationship']
         )
-        df_edges.to_csv(self.path + filename_out, index=False)
+        df_edges.to_csv(self.data_path + filename_out, index=False)
 
         if self.debug:
-            print(self.nx_graph)
+            print('[NX Graph]: ',self.nx_graph)
+
+
 
     def create_meta_file(self):
         """
@@ -256,7 +333,7 @@ class Graph:
             None
         """
         
-        dataset_name = os.path.basename(os.path.normpath(self.path))
+        dataset_name = os.path.basename(os.path.normpath(self.data_path))
 
         meta_data = {
             'dataset_name': dataset_name,
@@ -264,6 +341,63 @@ class Graph:
             'node_data': [{'file_name': self.name_nodes_file}]
         }
 
-        with open(os.path.join(self.path, 'meta.yaml'), 'w') as f:
+        with open(os.path.join(self.data_path, 'meta.yaml'), 'w') as f:
             yaml.dump(meta_data, f)
 
+
+
+def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:str='', from_caida:bool = False, feature_list=None, remove_degree=None, debug=False,max_paths=1000):
+    """
+    Crea un grafo con las configuraciones dadas.
+
+    Parameters:
+        graph_type (str): Tipo de grafo a crear (DiGraph, MultiDiGraph, Graph).
+        dataset_path (str): Ruta donde se guardarán los archivos generados.
+        relationships_file (str): Ruta al archivo que contiene la lista de aristas.
+        features_file (str): Ruta al archivo de características de los nodos.
+        feature_list (list, optional): Lista de prefijos de características a incluir. Si es None, se incluyen todas las características. Por defecto es None.
+        remove_degree (int, optional): Número de iteraciones para eliminar nodos de grado 1. Por defecto es None.
+
+    Returns:
+        Graph: Objeto de la clase Graph con el grafo creado y configurado.
+    """
+    # Creamos el directorio si no existe
+    if not os.path.exists(dataset_graph_path):
+        os.makedirs(dataset_graph_path)
+    print('[CaRPETA CREADA]: ',dataset_graph_path)
+
+
+    graph = Graph(dataset_graph_path, max_paths ,debug=debug)
+
+    if from_caida == True:
+        graph.create_graph_from_caida(filename=file,type=graph_type)
+    else:
+        graph.create_topology_from_ribs(rib_filename=file, type=graph_type)
+
+
+    print("[TOPOLOGIA CREADA]")
+    if features_file == 'node_degrees': 
+        # Se agregan como attr los grados in y out de los nodos
+        graph.only_degree_features_nodes(filename_out="nodes.csv")
+    elif features_file != '':
+        # Se agregan todos los attr del archivo de atributos
+        print("[todos attr]")
+        graph.features_nodes(features_file)
+    else:
+
+        # Crear un DataFrame con los nodos
+        df_nodos = pd.DataFrame({'src_id': list(graph.nx_graph.nodes())})
+
+        # Guardar en un archivo CSV
+        df_nodos.to_csv(dataset_graph_path+'nodes.csv', index=False)
+    
+    print("[FEATURES CREADOS]")
+
+    graph.create_meta_file()
+    print("[META CREADO]")
+    
+    if remove_degree:
+        for _ in range(remove_degree):
+            graph.remove_nodes_degree(1)
+
+    return graph

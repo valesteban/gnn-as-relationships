@@ -1,5 +1,8 @@
 import dgl
 import torch
+import numpy as np
+import scipy.sparse as sp
+
 
 class GNN:
     def __init__(self, debug=False):
@@ -14,7 +17,7 @@ class GNN:
 
         self.nx_graph = None
         self.dgl_graph = None
-        
+
     def load_dataset(self, data_path, force_reload=False):
         """
         Carga un dataset y lo convierte en un grafo DGL.
@@ -26,106 +29,75 @@ class GNN:
         Returns:
             None
         """
-    
+
         self.dgl_graph = dgl.data.CSVDataset(data_path, force_reload=force_reload)[0]
         
         if self.debug:
             print(self.dgl_graph)
+    
+    def split_graph(self, train_size=0.8):
+                
+        u,v = self.dgl_graph.edges()
 
-    # def split_dtaset_v2(self):
-    #   """
-    #   Divide los edges en tres conjuntos: training, validación y test.
-    #   #FIXME: el edge (1,2) es equivalente a (2,1)), es importante asegurarse de que ambos casos se asignen al mismo conjunto (entrenamiento, validación o prueba). La implementación actual, sin embargo, no garantiza esto.
-    #   """
-    #   number_of_edges = self.dgl_graph.num_edges()
-    #   u, v = self.dgl_graph.edges()
+        # IDs de lo edges
+        eids = np.arange(self.dgl_graph.num_edges()) 
+        # Shuffle the edges
+        eids = np.random.permutation(eids)
 
-    #   # Ordenar los nodos en cada edge
-    #   edges = torch.stack([torch.min(u, v), torch.max(u, v)], dim=1)
-      
-    #   # Crear un diccionario para almacenar las asignaciones de los edges
-    #   edge_dict = {}
-      
-    #   # Generar las máscaras
-    #   train_mask = torch.zeros(number_of_edges, dtype=torch.bool)
-    #   val_mask = torch.zeros(number_of_edges, dtype=torch.bool)
-    #   test_mask = torch.zeros(number_of_edges, dtype=torch.bool)
-      
-    #   for i in range(number_of_edges):
-    #       edge = tuple(edges[i].tolist())
-    #       if edge not in edge_dict:
-    #           # Asignar el edge a un conjunto basado en una muestra aleatoria
-    #           rand_value = torch.rand(1).item()
-    #           if rand_value < 0.6:
-    #               edge_dict[edge] = 'train'
-    #               train_mask[i] = True
-    #           elif rand_value < 0.8:
-    #               edge_dict[edge] = 'val'
-    #               val_mask[i] = True
-    #           else:
-    #               edge_dict[edge] = 'test'
-    #               test_mask[i] = True
-    #       else:
-    #           # Asignar el edge al mismo conjunto que su par
-    #           if edge_dict[edge] == 'train':
-    #               train_mask[i] = True
-    #           elif edge_dict[edge] == 'val':
-    #               val_mask[i] = True
-    #           else:
-    #               test_mask[i] = True
+        # Tamaño de train y test
+        test_size = int(len(eids) * 0.1) 
+        train_size = self.dgl_graph.num_edges() - test_size 
 
-    #   self.train_mask = train_mask
-    #   self.val_mask = val_mask
-    #   self.test_mask = test_mask
+        # Selecciona los edges de test y train
+        test_pos_u, test_pos_v = u[eids[:test_size]], v[eids[:test_size]]
+        train_pos_u, train_pos_v = u[eids[test_size:]], v[eids[test_size:]]
 
-    #   if self.debug:
-    #       print(f"Training edges: {self.train_mask.sum().item()}")
-    #       print(f"Validation edges: {self.val_mask.sum().item()}")
-    #       print(f"Test edges: {self.test_mask.sum().item()}")
+        # Matriz de adyacencia
+        adj = sp.coo_matrix((np.ones(len(u)), (u.numpy(), v.numpy())))
 
-    def split_dataset(self,percentage_train=0.6):
+        neg_u, neg_v = self.get_negative_edges( self.dgl_graph.num_edges())
+        #  167.564 -> 30 seg  -> 
+        #  334.996 -> 50 seg -> 100.000 paths
+        #1.676.722 -> 4 min 17 seg -> 500.000 paths
+
+        test_neg_u, test_neg_v = (
+            neg_u[:test_size],
+            neg_v[:test_size],
+        )
+
+        train_neg_u, train_neg_v = (
+            neg_u[test_size:],
+            neg_v[test_size:],
+        )
+
+        # Eliminar edges de test
+        self.train_g = dgl.remove_edges(self.dgl_graph, eids[:test_size])
+
+        self.train_pos_g = dgl.graph((train_pos_u, train_pos_v), num_nodes=self.dgl_graph.num_nodes())
+        self.train_neg_g = dgl.graph((train_neg_u, train_neg_v), num_nodes=self.dgl_graph.num_nodes())    
+
+        self.test_pos_g = dgl.graph((test_pos_u, test_pos_v), num_nodes=self.dgl_graph.num_nodes())
+        self.test_neg_g = dgl.graph((test_neg_u, test_neg_v), num_nodes=self.dgl_graph.num_nodes())
+    
+    
+    def get_negative_edges(self, num_neg_samples): #FIXME: optimizar
         """
-        Divide los edges en tres conjuntos: training, validación y test.
-
-        Parameters:
-        percentage_train (float, optional): Porcentaje de edges que se utilizarán para entrenamiento. Por defecto es 0.6.
-
-        Returns:
-        None
+        Genera aristas negativas para el grafo dado.
         """
-      
-        number_of_edges = self.dgl_graph.num_edges()
+        print(f"Generando {num_neg_samples} aristas negativas...")
+        neg_src_u = []
+        neg_dst_v = []
+        num_nodes = self.dgl_graph.num_nodes()
 
-        # Crear una máscara para entrenamiento con un percentage_train% de los edges
-        self.train_mask = torch.zeros(number_of_edges, dtype=torch.bool).bernoulli(percentage_train)
+        for i in range(num_neg_samples):
+            src = np.random.randint(0, num_nodes)
+            dst = np.random.randint(0, num_nodes)
+            while self.dgl_graph.has_edges_between(src, dst):
+                src = np.random.randint(0, num_nodes)
+                dst = np.random.randint(0, num_nodes)
+            neg_src_u.append(src)
+            neg_dst_v.append(dst)
 
-        # De los edges restantes, crear una máscara para validación con un 50% de los edges restantes
-        remaining_edges = ~self.train_mask
-        self.val_mask = torch.zeros(number_of_edges, dtype=torch.bool).bernoulli(0.5) & remaining_edges
+        print(f"Aristas negativas generadas: {i}")
 
-        # El resto de los edges serán para prueba
-        self.test_mask = ~(self.train_mask | self.val_mask)
-
-        # Asignar las máscaras a las aristas del grafo DGL
-        self.dgl_graph.edata['train_mask'] = self.train_mask
-        self.dgl_graph.edata['val_mask'] = self.val_mask
-        self.dgl_graph.edata['test_mask'] = self.test_mask
-
-
-        # Obtener índices de nodos de entrenamiento
-        self.train_nids = self.train_mask.nonzero(as_tuple=True)[0]
-
-        # Obtener índices de nodos de prueba
-        self.test_nids = self.test_mask.nonzero(as_tuple=True)[0]
-
-        if self.debug:
-            print(f"Training edges: {self.train_mask.sum().item()}")
-            print(f"Validation edges: {self.val_mask.sum().item()}")
-            print(f"Test edges: {self.test_mask.sum().item()}")
-
-      #TODO: investigar usar from sklearn.model_selection import train_test_split  
-
-    # def remove_ndata(self):
-    #   self.ndata = self.dgl_graph.ndata.pop('feat')
-
-
+        return torch.tensor(neg_src_u), torch.tensor(neg_dst_v)
