@@ -31,11 +31,12 @@ class GNN:
         """
 
         self.dgl_graph = dgl.data.CSVDataset(data_path, force_reload=force_reload)[0]
-        
+        self.dgl_graph.ndata["feat"] = self.dgl_graph.ndata["feat"].float()
+
         if self.debug:
             print(self.dgl_graph)
     
-    def split_graph(self, train_size=0.8):
+    def split_graph_edges(self, train_size=0.8):
                 
         u,v = self.dgl_graph.edges()
 
@@ -45,7 +46,7 @@ class GNN:
         eids = np.random.permutation(eids)
 
         # Tamaño de train y test
-        test_size = int(len(eids) * 0.1) 
+        test_size = int(len(eids) * train_size)
         train_size = self.dgl_graph.num_edges() - test_size 
 
         # Selecciona los edges de test y train
@@ -79,6 +80,34 @@ class GNN:
         self.test_pos_g = dgl.graph((test_pos_u, test_pos_v), num_nodes=self.dgl_graph.num_nodes())
         self.test_neg_g = dgl.graph((test_neg_u, test_neg_v), num_nodes=self.dgl_graph.num_nodes())
     
+    def split_graph_nodes(self, train_size=0.8):
+
+        num_nodes = self.dgl_graph.num_nodes()
+        nodes_ids = np.arange(num_nodes)
+        nodes = self.dgl_graph.nodes()
+        # Shuffle the nodes
+        nodes_ids = np.random.permutation(nodes_ids)
+
+        # Tamaño de train y test
+        train_size = int(num_nodes * train_size)
+        test_size = num_nodes - train_size 
+
+        # Split
+        train_nodes = nodes[nodes_ids[:train_size]]
+        test_nodes = nodes[nodes_ids[train_size:]]
+
+        # Crear máscaras
+        train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+
+        train_mask[train_nodes] = True
+        test_mask[test_nodes] = True
+
+        # Asignar al grafo
+        self.dgl_graph.train_mask = train_mask
+        self.dgl_graph.test_mask = test_mask
+
     
     def get_negative_edges(self, num_neg_samples): #FIXME: optimizar
         """
