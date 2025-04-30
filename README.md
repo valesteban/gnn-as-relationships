@@ -1,52 +1,36 @@
-# Trabajo de Tesis: Clasificación Binaria con Redes Neuronales en Grafos
+# Trabajo:
 
-Este proyecto implementa un modelo de clasificación binaria utilizando redes neuronales en grafos (GNNs) con la biblioteca [DGL (Deep Graph Library)](https://www.dgl.ai/). El objetivo principal es entrenar y evaluar modelos de aprendizaje profundo para tareas de predicción de relaciones en grafos.
 
 ## Estructura del Proyecto
 
 ```
 TrabajoTesis/ 
-├── data/ # Directorio para los datos de entrada 
-├── modules/ # Implementaciones de modelos y predictores 
-│       ├── gnn.py # Clase principal para manejar grafos 
-│       ├── models.py # Definición de modelos GNN (GCN, GraphSAGE, etc.) 
-│       ├── predictors.py # Predictores (DotPredictor, MLPPredictor, etc.) 
-├── results/ # Resultados generados (CSV, gráficos, etc.) 
-│       ├── binary_classification/ 
-├── utils.py # Funciones auxiliares (métricas, visualización, etc.) 
-├── binary_classification.ipynb # Notebook principal para ejecutar el flujo de trabajo 
-├── requirements.txt # Dependencias del proyecto └── README.md # Este archivo
+├── data/                               # Directorio para los datos de entrada, embeddings,e tc
+├── modules/                            # Implementaciones de modelos y clases auxiliares
+│       ├── gnn_models.py               # Definición de modelos GNN (GCN, GraphSAGE, etc.)  
+│       ├── gnn.py                      # Clase principal para trabajar tarea con grafo dgl: prepara los datos, hace splits, etc.
+│       ├── graph.py                    # Crea grafos a partir de RIBs exportadas a .csv para entrada a DGL 
+├── results/                            # Resultados generados (CSV, gráficos, etc.) 
+├── utils.py                            # Funciones auxiliares (métricas, visualización, etc.) 
+├── train_embeddings.ipynb              # Notebook que genera embeddings usando distintos métodos
+├── AS_relationships_inference.ipynb    # Notebook importa embeddings y infiere relaciones entre ASes
 ```
 
 
-
-## Requisitos
-
-Este proyecto utiliza Python 3.10 y las siguientes bibliotecas:
-
-- `torch`
-- `dgl`
-- `numpy`
-- `pandas`
-- `matplotlib`
-- `scikit-learn`
-- `tqdm`
-
-Instala las dependencias ejecutando:
-
-```bash
-pip install -r requirements.txt
-```
 
 ## Flujo de Trabajo
-- Carga de Datos: Los datos se cargan desde el directorio data/ y se procesan utilizando la clase GNN en modules/gnn.py.
 
-- Inicialización del Modelo: Los modelos GNN (como GCN o GraphSAGE) y los predictores (como DotPredictor o MLPPredictor) se inicializan en el notebook binary_classification.ipynb.
+- El notebook `train_embeddings.ipynb` crea un grafo en DGL utilizando el archivo `sanitized_ribs.txt`, ubicado en la carpeta `data/`.  
+  Luego se entrenan distintos modelos de GNN para generar embeddings representativos de la topología.  
+  Las tareas de entrenamiento consideradas:
 
-- Entrenamiento: Los modelos se entrenan utilizando diferentes estrategias de muestreo:
-        - NeighborSampler: Muestreo basado en vecinos.
-        - ClusterGCNSampler: Muestreo basado en clústeres.
+  - **Predicción de enlaces** (Link Prediction)
+  - **Predicción de atributos** (Attribute Prediction)
 
-- Evaluación: Se calculan métricas como precisión, recall y F1-score, y se generan gráficos de curvas ROC.
+  Una vez generados, los embeddings se guardan con nombres representativos.
 
-- Resultados: Los resultados (logits y etiquetas) se guardan en archivos CSV en el directorio results/binary_classification/.
+- En el notebook `AS_relationships_inference.ipynb`:
+
+  - Se importan los embeddings previamente generados.
+  - Se utiliza el dataset de relaciones AS proporcionado por **CAIDA**, que sirve para etiquetar y evaluar.
+  - Se entrena una red neuronal (RNN) que toma como entrada dos embeddings y genera como salida la inferencia del tipo de relación entre ASes.
