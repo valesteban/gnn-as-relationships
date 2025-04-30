@@ -189,26 +189,12 @@ class Graph:
         # Por cada nodo en la topología, lo agrego en el archivo nodes.csv con sus features
         attrs = {}
         for node in self.nx_graph.nodes():
-<<<<<<< HEAD
             try:
                 # Filtra las filas correspondientes al nodo y obtiene los features seleccionados
                 node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
                 
             except IndexError:
                 node_features = [0] * len(features.columns[1:])  # Asignar ceros si no se encuentra el nodo
-=======
-
-            # Obtener la fila del nodo
-            fila = features.loc[features['ASN'] == int(node)]
-            
-            # Si no se encuentra rellena con 0
-            if fila.empty:
-                empty_info += 1
-                num_features = features.shape[1] - 1  # -1 porque la primera columna es ASN
-                node_features = '0, ' [0] * num_features
-            else:
-                node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
->>>>>>> dd938f7dad20d9d83f29b8a3e6b2679fecd09c32
 
             node_features = ', '.join([str(feature) for feature in node_features]) 
             w = f'{str(node)},"{node_features}"\n'
@@ -382,12 +368,8 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
         graph.only_degree_features_nodes(filename_out="nodes.csv")
     elif features_file != '':
         # Se agregan todos los attr del archivo de atributos
-<<<<<<< HEAD
         graph.features_nodes(features_filename=features_file, filename_out="nodes.csv")
         print(graph.name_nodes_file,   graph.name_edges_file)
-=======
-        graph.features_nodes(features_file)
->>>>>>> dd938f7dad20d9d83f29b8a3e6b2679fecd09c32
     else:
 
         # Crear un DataFrame con los nodos
