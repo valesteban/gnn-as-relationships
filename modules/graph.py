@@ -208,8 +208,13 @@ class Graph:
         # Por cada nodo en la topología, lo agrego en el archivo nodes.csv con sus features
         attrs = {}
         for node in self.nx_graph.nodes():
-            # Filtra las filas correspondientes al nodo y obtiene los features seleccionados
-            node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
+            try:
+                # Filtra las filas correspondientes al nodo y obtiene los features seleccionados
+                node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
+                
+            except IndexError:
+                node_features = [0] * len(features.columns[1:])  # Asignar ceros si no se encuentra el nodo
+
             node_features = ', '.join([str(feature) for feature in node_features]) 
             w = f'{str(node)},"{node_features}"\n'
             f.write(w)
@@ -221,8 +226,6 @@ class Graph:
 
         # Agregamos attrinbutos a los nodos 
         nx.set_node_attributes(self.nx_graph, attrs)
-        print("[bbbbbbbbbbbbbbbbbbbbbb]")
-
 
         if self.debug:
             print('[NX Graph]: ',self.nx_graph)
@@ -369,20 +372,22 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
 
     graph = Graph(dataset_graph_path, max_paths ,debug=debug)
 
+    print("[Creando topologia]")
     if from_caida == True:
         graph.create_graph_from_caida(filename=file,type=graph_type)
     else:
         graph.create_topology_from_ribs(rib_filename=file, type=graph_type)
+    
 
-
-    print("[TOPOLOGIA CREADA]")
+    print("[Agregando attr]")
     if features_file == 'node_degrees': 
+        print("[solo grados]")
         # Se agregan como attr los grados in y out de los nodos
         graph.only_degree_features_nodes(filename_out="nodes.csv")
     elif features_file != '':
         # Se agregan todos los attr del archivo de atributos
-        print("[todos attr]")
-        graph.features_nodes(features_file)
+        graph.features_nodes(features_filename=features_file, filename_out="nodes.csv")
+        print(graph.name_nodes_file,   graph.name_edges_file)
     else:
 
         # Crear un DataFrame con los nodos
