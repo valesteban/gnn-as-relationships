@@ -160,7 +160,7 @@ class Graph:
                     print('[NX Graph]: ',self.nx_graph)
         
 
-    def features_nodes(self,features_filename, list_feat = "all",filename_out="nodes.csv"):
+    def features_nodes(self,features_filename,filename_out="nodes.csv"):
         """
         Crea un archivo nodes.csv con los nodos id y sus características.
         Si no se especifica una lista de características, se incluyen todas.
@@ -178,26 +178,6 @@ class Graph:
         
         # Lee el archivo de características
         features = pd.read_csv(features_filename)
-        no_cat_attr = []
-
-        # Si se especifica una lista de features, selecciona solo esas columnas
-        if list_feat != "all":
-
-            # Crear una lista para guardar las columnas seleccionadas
-            selected_columns = ['ASN']
-            
-            # Iterar sobre cada prefijo en list_feat (para representacion de hot hot de feat categoricos)
-            for prefix in list_feat:
-                # Filtrar columnas que empiezan con el prefijo
-                matched_columns = [col for col in features.columns if col.startswith(prefix)]
-                selected_columns.extend(matched_columns)
-
-                # Agregamos valor no categorico (luego nomrlaizar)
-                if prefix in features.columns:
-                    no_cat_attr.append(prefix)
-                
-            # Filtrar el DataFrame para obtener solo columnas seleccionadas
-            features = features[selected_columns]
         
         # Crea el archivo nodes.csv
         f = open(self.data_path + filename_out, "w")
@@ -205,15 +185,30 @@ class Graph:
         headers = "node_id,feat\n"
         f.write(headers)
 
+        empty_info = 0
         # Por cada nodo en la topología, lo agrego en el archivo nodes.csv con sus features
         attrs = {}
         for node in self.nx_graph.nodes():
+<<<<<<< HEAD
             try:
                 # Filtra las filas correspondientes al nodo y obtiene los features seleccionados
                 node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
                 
             except IndexError:
                 node_features = [0] * len(features.columns[1:])  # Asignar ceros si no se encuentra el nodo
+=======
+
+            # Obtener la fila del nodo
+            fila = features.loc[features['ASN'] == int(node)]
+            
+            # Si no se encuentra rellena con 0
+            if fila.empty:
+                empty_info += 1
+                num_features = features.shape[1] - 1  # -1 porque la primera columna es ASN
+                node_features = '0, ' [0] * num_features
+            else:
+                node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
+>>>>>>> dd938f7dad20d9d83f29b8a3e6b2679fecd09c32
 
             node_features = ', '.join([str(feature) for feature in node_features]) 
             w = f'{str(node)},"{node_features}"\n'
@@ -223,6 +218,7 @@ class Graph:
         
         f.close()
         self.name_nodes_file = filename_out
+        print(f"[ARCHIVO NODES.CSV CREADO], {empty_info} nodos sin features")
 
         # Agregamos attrinbutos a los nodos 
         nx.set_node_attributes(self.nx_graph, attrs)
@@ -386,8 +382,12 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
         graph.only_degree_features_nodes(filename_out="nodes.csv")
     elif features_file != '':
         # Se agregan todos los attr del archivo de atributos
+<<<<<<< HEAD
         graph.features_nodes(features_filename=features_file, filename_out="nodes.csv")
         print(graph.name_nodes_file,   graph.name_edges_file)
+=======
+        graph.features_nodes(features_file)
+>>>>>>> dd938f7dad20d9d83f29b8a3e6b2679fecd09c32
     else:
 
         # Crear un DataFrame con los nodos
@@ -396,8 +396,6 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
         # Guardar en un archivo CSV
         df_nodos.to_csv(dataset_graph_path+'nodes.csv', index=False)
     
-    print("[FEATURES CREADOS]")
-
     graph.create_meta_file()
     print("[META CREADO]")
     
