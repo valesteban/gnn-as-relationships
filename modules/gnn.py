@@ -79,6 +79,21 @@ class GNN:
 
         self.test_pos_g = dgl.graph((test_pos_u, test_pos_v), num_nodes=self.dgl_graph.num_nodes())
         self.test_neg_g = dgl.graph((test_neg_u, test_neg_v), num_nodes=self.dgl_graph.num_nodes())
+
+        if "feat" in self.dgl_graph.ndata:
+            self.train_pos_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+            self.train_neg_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+            self.test_pos_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+            self.test_neg_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+        
+        # Copiar edata["Relationship"] si existe
+        if "Relationship" in self.dgl_graph.edata:
+            test_eids = torch.tensor(eids[:test_size])
+            train_eids = torch.tensor(eids[test_size:])
+            relationship = self.dgl_graph.edata["Relationship"]
+            self.train_pos_g.edata["Relationship"] = relationship[train_eids]
+            self.test_pos_g.edata["Relationship"] = relationship[test_eids]
+
     
     def split_graph_nodes(self, train_size=0.8):
 

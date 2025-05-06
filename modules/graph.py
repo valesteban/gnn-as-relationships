@@ -27,7 +27,7 @@ class Graph:
         name_nodes_file = ""
         self.max_paths = max_paths
 
-    def create_graph_from_caida(self, filename:str,type:str, filename_out="edges.csv"):
+    def create_graph_from_caida(self, filename:str, filename_out="edges.csv"):
         """
         Crea archivo edges.csv apartir de dataset CAIDA AS Relationships. 
         Lee un grafo desde un archivo de lista de aristas (edgelist) y lo almacena en self.graph.
@@ -36,14 +36,13 @@ class Graph:
         
         Parameters:
             filename (str): Ruta al archivo que contiene la lista de aristas.
-            type (str): Tipo de grafo a crear (DiGraph, MultiDiGraph, Graph). 
             out_file (str): Nombre del archivo de salida.
 
         Returns:
             None
         """
 
-        nx_graph = nx.Graph()
+        nx_graph = nx.DiGraph()
 
 
         with bz2.open(filename, "rb") as f:
@@ -79,17 +78,14 @@ class Graph:
                     # Cambiamos valor label a 1
                     labels.append(1)
 
-                    if type == "MultiDiGraph":
-                        # Agregamos relacion C2P 
-                        tor_dataset.append(np.asarray(line[1::-1])) 
-                        labels.append(2)
+                    # Agregamos relacion C2P 
+                    tor_dataset.append(np.asarray(line[1::-1])) 
+                    labels.append(2)
                 
                 else: # P2P
                     labels.append(label)
-
-                    if type == "MultiDiGraph":
-                        tor_dataset.append(np.asarray(line[1::-1])) 
-                        labels.append(label)
+                    tor_dataset.append(np.asarray(line[1::-1])) 
+                    labels.append(label)
         
         # Creamos DataFrame
         df_edges = pd.DataFrame(tor_dataset, columns=["src_id", "dst_id"])
@@ -101,21 +97,15 @@ class Graph:
 
 
         # Creamoss archivo edges.csv
-        if type == "DiGraph":
-            self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.DiGraph())
-        elif type == "MultiDiGraph":
-            self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.MultiDiGraph())
-        else:
-            self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.Graph())
+        self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.DiGraph())
                 
         if self.debug:
                 print('[NX Graph]: ',self.nx_graph)
 
-    def create_topology_from_ribs(self, rib_filename:str,type:str ,filename_out="edges.csv"):
+    def create_topology_from_ribs(self, rib_filename:str,filename_out="edges.csv"):
 
         # Creamos un grafo dirigido
-        if type == "DiGraph":
-            self.nx_graph = nx.DiGraph()
+        self.nx_graph = nx.DiGraph()
 
         tor_dataset = []
 
@@ -355,16 +345,6 @@ class Graph:
 
 
     def create_meta_file(self):
-        """
-        Crea un archivo meta.yaml con la información del grafo.
-
-        Parameters:
-            graph_type (str): Tipo de grafo (DiGraph, MultiDiGraph).
-            features_type (str): Tipo de características (AllFeatures, DegreeFeatures).
-
-        Returns:
-            None
-        """
         
         dataset_name = os.path.basename(os.path.normpath(self.data_path))
 
@@ -379,12 +359,11 @@ class Graph:
 
 
 
-def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:str='', from_caida:bool = False, feature_list=None, label_edges_file='' , remove_degree=None, debug=False,max_paths=1000):
+def create_files(dataset_graph_path:str,file:str, features_file:str='', from_caida:bool = False, feature_list=None, label_edges_file='' , remove_degree=None, debug=False,max_paths=1000):
     """
     Crea un grafo con las configuraciones dadas.
 
     Parameters:
-        graph_type (str): Tipo de grafo a crear (DiGraph, MultiDiGraph, Graph).
         dataset_path (str): Ruta donde se guardarán los archivos generados.
         relationships_file (str): Ruta al archivo que contiene la lista de aristas.
         features_file (str): Ruta al archivo de características de los nodos.
@@ -404,9 +383,9 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
 
     print(f"[Creando topologia desde {file}]")
     if from_caida == True:
-        graph.create_graph_from_caida(filename=file,type=graph_type)
+        graph.create_graph_from_caida(filename=file)
     else:
-        graph.create_topology_from_ribs(rib_filename=file, type=graph_type)
+        graph.create_topology_from_ribs(rib_filename=file)
     
 
     print(f"[Agregando attr a nodos desde {features_file}]")

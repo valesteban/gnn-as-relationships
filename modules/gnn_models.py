@@ -10,12 +10,12 @@ import torch
 
 # GCN
 class GCN(nn.Module):
-    def __init__(self, in_feats, hidden_feats, out_feats):
+    def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1):
         super().__init__()
         self.conv1 = GraphConv(in_feats, hidden_feats)
         self.conv2 = GraphConv(hidden_feats, out_feats)
 
-        self.decoderMLP = MLPPredictor(out_feats)
+        self.MLP = MLPPredictor(out_feats,out_feats_mlp)
 
     def encode(self, g, in_feat):
         g = dgl.add_self_loop(g)
@@ -36,19 +36,18 @@ class GCN(nn.Module):
             return g.edata["score"][:, 0]
         
     def decodeMLP(self, g, h):
-        return self.decoderMLP(g, h)   
+        return self.MLP(g, h)   
 
     # def decode_all(self, z):
     #     return (z @ z.T) > 0
-    
 
 class GraphSAGE(nn.Module):
-    def __init__(self, in_feats, hidden_feats, out_feats):
+    def __init__(self, in_feats, hidden_feats,  out_feats, out_feats_mlp=1):
         super().__init__()  # ✅ Esto es lo correcto
         self.conv1 = SAGEConv(in_feats, hidden_feats, 'mean')
         self.conv2 = SAGEConv(hidden_feats, out_feats, 'mean')
 
-        self.decoderMLP = MLPPredictor(out_feats)
+        self.MLP = MLPPredictor(out_feats,out_feats_mlp)
 
 
     def encode(self, g, in_feat):
@@ -67,16 +66,16 @@ class GraphSAGE(nn.Module):
             return g.edata["score"][:, 0]
         
     def decodeMLP(self, g, h):
-        return self.decoderMLP(g, h)  
+        return self.MLP(g, h)  
        
 
 class GAT(nn.Module):
-    def __init__(self, in_feats, hidden_feats, out_feats,num_heads=1):
+    def __init__(self, in_feats, hidden_feats,  out_feats, out_feats_mlp=1,num_heads=1):
         super().__init__()
         self.conv1 = GATConv(in_feats, hidden_feats, num_heads)
         self.conv2 = GATConv(hidden_feats, out_feats, num_heads)
 
-        self.decoderMLP = MLPPredictor(out_feats)
+        self.MLP = MLPPredictor(out_feats,out_feats_mlp)
 
 
     def encode(self, g, in_feat):
@@ -99,17 +98,17 @@ class GAT(nn.Module):
             return g.edata["score"][:, 0]
     
     def decodeMLP(self, g, h):
-        return self.decoderMLP(g, h)  
+        return self.MLP(g, h)  
     
 
 
 
 class MLPPredictor(nn.Module):
-    def __init__(self, h_feats):
+    def __init__(self, h_feats,out_features):
         super().__init__()
         # Entrada es 2 * h_feats porque porque toma las entradas de los dos nodos que comparteb una arista
         self.W1 = nn.Linear(h_feats * 2, h_feats)
-        self.W2 = nn.Linear(h_feats, 1)
+        self.W2 = nn.Linear(h_feats, out_features)
 
     def apply_edges(self, edges):
         h = torch.cat([edges.src["h"], edges.dst["h"]], 1)
