@@ -116,8 +116,6 @@ class Graph:
         # Creamos un grafo dirigido
         if type == "DiGraph":
             self.nx_graph = nx.DiGraph()
-        elif type == "MultiDiGraph":
-            self.nx_graph = nx.MultiDiGraph()
 
         tor_dataset = []
 
@@ -142,11 +140,9 @@ class Graph:
                     origen = as_list[i]
                     destino = as_list[i + 1]
                     self.nx_graph.add_edge(origen, destino)
-                    if type == "DiGraph":
-                        tor_dataset.append(np.asarray([origen, destino]))
-                    elif type == "MultiDiGraph":
-                        tor_dataset.append(np.asarray([origen, destino]))
-                        tor_dataset.append(np.asarray([destino, origen]))
+
+                    tor_dataset.append(np.asarray([origen, destino]))   
+                    tor_dataset.append(np.asarray([destino, origen]))                 
 
         # Creamos DataFrame
         df_edges = pd.DataFrame(tor_dataset, columns=["src_id", "dst_id"])
@@ -212,6 +208,43 @@ class Graph:
         if self.debug:
             print('[NX Graph]: ',self.nx_graph)
 
+    def label_edges_caida(self,label_edges_file,filename_out="edges.csv"):
+
+
+        nx_graph = self.nx_graph
+        
+        
+        with bz2.open(label_edges_file, "rb") as f:
+            data = f.read()
+            lines = data.decode().splitlines()
+
+            for count, line in enumerate(lines):                
+
+                first_char = line[0]
+
+                # Ignorar lineas comentarios
+                if first_char == "#":
+                    continue
+            
+                line = line.split("|")
+                src = int(line[0])
+                dst = int(line[1])
+                label = int(line[2])
+
+                if nx_graph.has_edge(src, dst):
+                    if label == -1: #P2C
+                        label = 1
+
+                    nx_graph[src][dst]['Relationship'] = label
+
+                if nx_graph.has_edge(dst, src):  
+                    if label == -1:
+                        label = 2
+                    nx_graph[dst][src]['Relationship'] = label
+                
+
+
+
     def only_degree_features_nodes(self,filename_out="nodes.csv"):
         """
         Crea un archivo nodes.csv que consiste en node_id y attr correspondientes a node_degree_in y npde_degree_out.
@@ -269,6 +302,21 @@ class Graph:
 
         # Guardamos nombre de archivo de nodos
         self.name_nodes_file = filename_out
+
+
+    def remove_edges_with_no_label(self):
+        # Paso 1: recolectar aristas sin el atributo 'Relationship'
+        edges_to_remove = [
+            (src, dst)
+            for src, dst in self.nx_graph.edges()
+            if 'Relationship' not in self.nx_graph[src][dst]
+        ]
+
+        # Paso 2: eliminarlas
+        self.nx_graph.remove_edges_from(edges_to_remove)
+
+        print(f"[INFO] Se eliminaron {len(edges_to_remove)} aristas sin 'Relationship'")
+
 
     def remove_nodes_degree(self, degree,filename_out="edges.csv"):
         """
@@ -331,7 +379,7 @@ class Graph:
 
 
 
-def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:str='', from_caida:bool = False, feature_list=None, remove_degree=None, debug=False,max_paths=1000):
+def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:str='', from_caida:bool = False, feature_list=None, label_edges_file='' , remove_degree=None, debug=False,max_paths=1000):
     """
     Crea un grafo con las configuraciones dadas.
 
@@ -349,21 +397,20 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
     # Creamos el directorio si no existe
     if not os.path.exists(dataset_graph_path):
         os.makedirs(dataset_graph_path)
-    print('[CaRPETA CREADA]: ',dataset_graph_path)
+    print('[CARPETA CREADA]: ',dataset_graph_path)
 
 
     graph = Graph(dataset_graph_path, max_paths ,debug=debug)
 
-    print("[Creando topologia]")
+    print(f"[Creando topologia desde {file}]")
     if from_caida == True:
         graph.create_graph_from_caida(filename=file,type=graph_type)
     else:
         graph.create_topology_from_ribs(rib_filename=file, type=graph_type)
     
 
-    print("[Agregando attr]")
+    print(f"[Agregando attr a nodos desde {features_file}]")
     if features_file == 'node_degrees': 
-        print("[solo grados]")
         # Se agregan como attr los grados in y out de los nodos
         graph.only_degree_features_nodes(filename_out="nodes.csv")
     elif features_file != '':
@@ -378,6 +425,15 @@ def create_files(graph_type:str, dataset_graph_path:str,file:str, features_file:
         # Guardar en un archivo CSV
         df_nodos.to_csv(dataset_graph_path+'nodes.csv', index=False)
     
+    if 'as-rel' in label_edges_file:
+        print("[Etiquetando aristas con CAIDA]")
+        graph.label_edges_caida(label_edges_file=label_edges_file, filename_out="edges.csv")
+        # eliminar aristas sin label
+        graph.remove_edges_with_no_label()
+
+    
+
+
     graph.create_meta_file()
     print("[META CREADO]")
     
