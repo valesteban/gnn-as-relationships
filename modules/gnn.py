@@ -83,7 +83,69 @@ class GNN:
         # Copiar labels a los subgrafos positivos
         self.train_pos_g.edata["Relationship"] = relationship[torch.tensor(train_eids)]
         self.test_pos_g.edata["Relationship"] = relationship[torch.tensor(test_eids)]
+    
+    def split_graph_edges_basic_full_graph(self, train_size=0.8):
 
+        if self.debug:
+            print("Dividiendo edges del grafo...")
+
+    def split_graph_edges_basic(self, train_size=0.8):
+                
+        u,v = self.dgl_graph.edges()
+
+        # IDs de lo edges
+        eids = np.arange(self.dgl_graph.num_edges()) 
+        # Shuffle the edges
+        eids = np.random.permutation(eids)
+
+        # Tamaño de train y test
+        test_size = int(len(eids) * train_size)
+        train_size = self.dgl_graph.num_edges() - test_size 
+
+        # Selecciona los edges de test y train
+        test_pos_u, test_pos_v = u[eids[:test_size]], v[eids[:test_size]]
+        train_pos_u, train_pos_v = u[eids[test_size:]], v[eids[test_size:]]
+
+        # Matriz de adyacencia
+        adj = sp.coo_matrix((np.ones(len(u)), (u.numpy(), v.numpy())))
+
+        neg_u, neg_v = self.get_negative_edges( self.dgl_graph.num_edges())
+        #  167.564 -> 30 seg  -> 
+        #  334.996 -> 50 seg -> 100.000 paths
+        #1.676.722 -> 4 min 17 seg -> 500.000 paths
+
+        test_neg_u, test_neg_v = (
+            neg_u[:test_size],
+            neg_v[:test_size],
+        )
+
+        train_neg_u, train_neg_v = (
+            neg_u[test_size:],
+            neg_v[test_size:],
+        )
+
+        # Eliminar edges de test
+        self.train_g = dgl.remove_edges(self.dgl_graph, eids[:test_size])
+
+        self.train_pos_g = dgl.graph((train_pos_u, train_pos_v), num_nodes=self.dgl_graph.num_nodes())
+        self.train_neg_g = dgl.graph((train_neg_u, train_neg_v), num_nodes=self.dgl_graph.num_nodes())    
+
+        self.test_pos_g = dgl.graph((test_pos_u, test_pos_v), num_nodes=self.dgl_graph.num_nodes())
+        self.test_neg_g = dgl.graph((test_neg_u, test_neg_v), num_nodes=self.dgl_graph.num_nodes())
+
+        if "feat" in self.dgl_graph.ndata:
+            self.train_pos_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+            self.train_neg_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+            self.test_pos_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+            self.test_neg_g.ndata["feat"] = self.dgl_graph.ndata["feat"]
+        
+        # Copiar edata["Relationship"] si existe
+        if "Relationship" in self.dgl_graph.edata:
+            test_eids = torch.tensor(eids[:test_size])
+            train_eids = torch.tensor(eids[test_size:])
+            relationship = self.dgl_graph.edata["Relationship"]
+            self.train_pos_g.edata["Relationship"] = relationship[train_eids]
+            self.test_pos_g.edata["Relationship"] = relationship[test_eids]
     
     def split_graph_nodes(self, train_size=0.8):
 

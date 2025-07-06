@@ -8,8 +8,6 @@ import yaml
 import os
 
 
-
-
 class Graph:
     def __init__(self,dataset_graph_path ,max_paths,debug = False):
         """
@@ -132,7 +130,8 @@ class Graph:
                     self.nx_graph.add_edge(origen, destino)
 
                     tor_dataset.append(np.asarray([origen, destino]))   
-                    tor_dataset.append(np.asarray([destino, origen]))                 
+                    # tor_dataset.append(np.asarray([destino, origen]))  
+                    
 
         # Creamos DataFrame
         df_edges = pd.DataFrame(tor_dataset, columns=["src_id", "dst_id"])
@@ -140,7 +139,6 @@ class Graph:
         # Creamoss archivo edges.csv
         df_edges.to_csv(self.data_path+"edges.csv", index=False)
         self.name_edges_file = filename_out
-        print("[ARCHIVO EDGES.CSV CREADO]")
 
         if self.debug:
                     print('[NX Graph]: ',self.nx_graph)
@@ -190,7 +188,7 @@ class Graph:
         
         f.close()
         self.name_nodes_file = filename_out
-        print(f"[ARCHIVO NODES.CSV CREADO], {empty_info} nodos sin features")
+        # print(f"[ARCHIVO NODES.CSV CREADO], {empty_info} nodos sin features")
 
         # Agregamos attrinbutos a los nodos 
         nx.set_node_attributes(self.nx_graph, attrs)
@@ -319,9 +317,10 @@ class Graph:
         Returns:
             None
         """
+
         list_nodes_remove = []
-        for node,deg in dict(self.nx_graph.degree()).items():
-            if deg <= degree:
+        for node,real_degree in dict(self.nx_graph.degree()).items():
+            if real_degree <= degree:
                 list_nodes_remove.append(node)
         
         self.nx_graph.remove_nodes_from(list_nodes_remove)
@@ -329,7 +328,7 @@ class Graph:
         # Creamos el nuevo edges.csv
         edge_list =  self.nx_graph.edges.data()
 
-        # Crear DataFrame con manejo de casos sin atributos de aristas
+        # Crear DataFrame para guardar edges.csv
         df_edges = pd.DataFrame(
             [
                 (u, v, data.get('Relationship', None))  # Usar .get() para manejar la ausencia del atributo
@@ -337,10 +336,21 @@ class Graph:
             ],
             columns=['src_id', 'dst_id', 'Relationship']
         )
+
+
         df_edges.to_csv(self.data_path + filename_out, index=False)
 
+        # Se lee archivo modes.csv
+        df_nodes = pd.read_csv(self.data_path + self.name_nodes_file)
+
+        # Se sacan los nodos que están en list_nodes_remove
+        df_nodes_filtered = df_nodes[~df_nodes['node_id'].isin(list_nodes_remove)]
+
+        # Se guarda el nuevo archivo nodes.csv
+        df_nodes_filtered.to_csv(self.data_path + self.name_nodes_file, index=False)
+
         if self.debug:
-            print('[NX Graph]: ',self.nx_graph)
+            print('[NX Graph eliminando]: ',self.nx_graph) 
 
 
 
@@ -359,35 +369,49 @@ class Graph:
 
 
 
-def create_files(dataset_graph_path:str,file:str, features_file:str='', from_caida:bool = False, feature_list=None, label_edges_file='' , remove_degree=None, debug=False,max_paths=1000):
+def create_files(output_dir:str, 
+                 rib_file:str,               
+                 features_file:str='',   
+                 from_caida:bool = False,   
+                 label_edges_file='' , 
+                 remove_degree=None, 
+                 debug=False,
+                 max_paths=1000):
     """
-    Crea un grafo con las configuraciones dadas.
+    Crea archivos nodes.csv y edges.csv para crear el dataset de un grafo en formato DGL.
+    Los archivos se crean a partir de las configuraciones entregadas como parámetros.
 
     Parameters:
-        dataset_path (str): Ruta donde se guardarán los archivos generados.
-        relationships_file (str): Ruta al archivo que contiene la lista de aristas.
+        output_dir (str): Ruta donde se guardarán los archivos generados.
+        rib_file (str): Ruta al con las RIBs.
         features_file (str): Ruta al archivo de características de los nodos.
-        feature_list (list, optional): Lista de prefijos de características a incluir. Si es None, se incluyen todas las características. Por defecto es None.
+        from_caida (bool): Si es True, se crea el grafo a partir de un dataset CAIDA AS Relationships. Por defecto es False.
+        label_edges_file (str): Ruta al archivo que contiene las etiquetas de las aristas. Por defecto es una cadena vacía.
         remove_degree (int, optional): Número de iteraciones para eliminar nodos de grado 1. Por defecto es None.
+        debug (bool): Si es True, se imprimen mensajes de depuración. Por defecto es False.
+        max_paths (int): Número máximo de rutas BGP a considerar. Por defecto es
 
     Returns:
         Graph: Objeto de la clase Graph con el grafo creado y configurado.
+
     """
+
     # Creamos el directorio si no existe
-    if not os.path.exists(dataset_graph_path):
-        os.makedirs(dataset_graph_path)
-    print('[CARPETA CREADA]: ',dataset_graph_path)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    print('[CARPETA CREADA]: ',output_dir)
 
+    # Creeamos instancia de la clase Graph
+    graph = Graph(output_dir, max_paths ,debug=debug)
 
-    graph = Graph(dataset_graph_path, max_paths ,debug=debug)
-
-    print(f"[Creando topologia desde {file}]")
+    # Creamos archivo edges.csv
+    print(f"[Creando topologia desde {rib_file}]")
     if from_caida == True:
-        graph.create_graph_from_caida(filename=file)
+        graph.create_graph_from_caida(filename=rib_file)
     else:
-        graph.create_topology_from_ribs(rib_filename=file)
+        graph.create_topology_from_ribs(rib_filename=rib_file)
     
-
+    # Creamos archivo nodes.csv
     print(f"[Agregando attr a nodos desde {features_file}]")
     if features_file == 'node_degrees': 
         # Se agregan como attr los grados in y out de los nodos
@@ -395,14 +419,15 @@ def create_files(dataset_graph_path:str,file:str, features_file:str='', from_cai
     elif features_file != '':
         # Se agregan todos los attr del archivo de atributos
         graph.features_nodes(features_filename=features_file, filename_out="nodes.csv")
-        print(graph.name_nodes_file,   graph.name_edges_file)
+
     else:
+        print("[No se agregan atributos a los nodos]")
 
         # Crear un DataFrame con los nodos
         df_nodos = pd.DataFrame({'src_id': list(graph.nx_graph.nodes())})
 
         # Guardar en un archivo CSV
-        df_nodos.to_csv(dataset_graph_path+'nodes.csv', index=False)
+        df_nodos.to_csv(output_dir + 'nodes.csv', index=False)
     
     if 'as-rel' in label_edges_file:
         print("[Etiquetando aristas con CAIDA]")
@@ -415,9 +440,9 @@ def create_files(dataset_graph_path:str,file:str, features_file:str='', from_cai
 
     graph.create_meta_file()
     print("[META CREADO]")
-    
     if remove_degree:
-        for _ in range(remove_degree):
+        for i in range(remove_degree):
             graph.remove_nodes_degree(1)
+
 
     return graph

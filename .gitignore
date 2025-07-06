@@ -13,6 +13,7 @@ venv.bak/
 
 # Env
 env310/
+ennv310/
 
 # Data
 data/*
@@ -24,3 +25,6 @@ data/*
 *.txt
 *.pth
 *.npy
+*.json
+*.txt
+*.png
