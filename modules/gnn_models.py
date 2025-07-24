@@ -15,7 +15,12 @@ class GCN(nn.Module):
         self.conv1 = GraphConv(in_feats, hidden_feats)
         self.conv2 = GraphConv(hidden_feats, out_feats)
 
+        # Enfoque encoder-decoder
         self.MLP = MLPPredictor(out_feats,out_feats_mlp)
+
+        # Regresor para prediccion atributo
+        self.regressor = nn.Linear(out_feats, 1)
+
 
     def encode(self, g, in_feat):
         g = dgl.add_self_loop(g)
@@ -36,7 +41,12 @@ class GCN(nn.Module):
             return g.edata["score"][:, 0]
         
     def decodeMLP(self, g, h):
-        return self.MLP(g, h)   
+        return self.MLP(g, h)  
+
+    def forward(self, g, x):
+        h = self.encode(g, x)  # Embeddings
+        out = self.regressor(h)  # Predicción final
+        return out 
 
     # def decode_all(self, z):
     #     return (z @ z.T) > 0
@@ -48,6 +58,9 @@ class GraphSAGE(nn.Module):
         self.conv2 = SAGEConv(hidden_feats, out_feats, 'mean')
 
         self.MLP = MLPPredictor(out_feats,out_feats_mlp)
+
+        # Regresor para prediccion atributo
+        self.regressor = nn.Linear(out_feats, 1)
 
 
     def encode(self, g, in_feat):
@@ -67,6 +80,11 @@ class GraphSAGE(nn.Module):
         
     def decodeMLP(self, g, h):
         return self.MLP(g, h)  
+    
+    def forward(self, g, x):
+        h = self.encode(g, x)  # Embeddings
+        out = self.regressor(h)  # Predicción final
+        return out 
        
 
 class GAT(nn.Module):
@@ -76,6 +94,9 @@ class GAT(nn.Module):
         self.conv2 = GATConv(hidden_feats, out_feats, num_heads)
 
         self.MLP = MLPPredictor(out_feats,out_feats_mlp)
+
+        # Regresor para prediccion atributo
+        self.regressor = nn.Linear(out_feats, 1)
 
 
     def encode(self, g, in_feat):
@@ -99,6 +120,11 @@ class GAT(nn.Module):
     
     def decodeMLP(self, g, h):
         return self.MLP(g, h)  
+
+    def forward(self, g, x):
+        h = self.encode(g, x)  # Embeddings
+        out = self.regressor(h)  # Predicción final
+        return out 
     
 
 
