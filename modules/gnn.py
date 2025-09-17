@@ -344,40 +344,48 @@ class GNN:
 
 
     def add_random_features(self, dim: int = 64,
-                                std: float = 0.05,   # menor varianza de partida
+                                std: float = 0.05,
                                 seed: int | None = None,
-                                mode: str = "minmax" # o "minmax" "zscore"
+                                mode: str = "minmax"  # opciones: "minmax", "zscore", "uniform"
                                 ):
-            """
-            Crea/repone ndata['feat'] con ruido controlado y lo normaliza.
+        """
+        Crea/repone ndata['feat'] con ruido controlado y lo normaliza.
 
-            • dim  : nº de columnas
-            • std  : σ inicial del N(0,σ²)  (cuanto menor, menos dispersión)
-            • mode : 'zscore' → media 0, var 1 por columna
-                    'minmax' → escala cada columna a [0,1]
-            """
-            if seed is not None:
-                torch.manual_seed(seed)
+        • dim  : nº de columnas
+        • std  : σ inicial del N(0,σ²)  (cuanto menor, menos dispersión)
+        • mode : 
+            'zscore' → normaliza cada columna a media 0 y varianza 1
+            'minmax' → normaliza cada columna al rango [0,1]
+            'uniform' → genera valores directamente en [0,1] sin normalizar
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
 
-            n = self.dgl_graph.num_nodes()
-            x = torch.randn(n, dim) * std        # 𝒩(0, std²)
+        n = self.dgl_graph.num_nodes()
 
-            if mode == "zscore":
-                mu  = x.mean(dim=0, keepdim=True)
-                sig = x.std(dim=0, keepdim=True).clamp_min(1e-6)
-                x   = (x - mu) / sig
-            elif mode == "minmax":
-                x_min = x.min(dim=0, keepdim=True).values
-                x_max = x.max(dim=0, keepdim=True).values
-                rng   = (x_max - x_min).clamp_min(1e-6)
-                x     = (x - x_min) / rng
-            else:
-                raise ValueError("mode debe ser 'zscore' o 'minmax'")
+        if mode == "zscore":
+            x = torch.randn(n, dim) * std
+            mu  = x.mean(dim=0, keepdim=True)
+            sig = x.std(dim=0, keepdim=True).clamp_min(1e-6)
+            x   = (x - mu) / sig
 
-            self.dgl_graph.ndata['feat'] = x
+        elif mode == "minmax":
+            x = torch.randn(n, dim) * std
+            x_min = x.min(dim=0, keepdim=True).values
+            x_max = x.max(dim=0, keepdim=True).values
+            rng   = (x_max - x_min).clamp_min(1e-6)
+            x     = (x - x_min) / rng
 
-            if self.debug:
-                print(f"[add_random_features] feat ← ({n}, {dim})  |  mode={mode}")
+        elif mode == "uniform":
+            x = torch.rand(n, dim)  # ya está entre [0, 1]
+
+        else:
+            raise ValueError("mode debe ser 'zscore', 'minmax' o 'uniform'")
+
+        self.dgl_graph.ndata['feat'] = x
+
+        if self.debug:
+            print(f"[add_random_features] feat ← ({n}, {dim})  |  mode={mode}")
 
 
 
