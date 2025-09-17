@@ -15,32 +15,18 @@ class GCN(nn.Module):
         self.conv1 = GraphConv(in_feats, hidden_feats)
         self.conv2 = GraphConv(hidden_feats, out_feats)
     
-        # Enfoque encoder-decoder
         self.MLP = MLPPredictor(out_feats,out_feats_mlp)
-
-        # Decodificador para prediccion de aristas
         self.BilinearDecoder = BilinearPredictor(out_feats, 3)
-
-        # Regresor para prediccion atributo
         self.regressor = nn.Linear(out_feats, 1)
-
         self.drop  = nn.Dropout(drop)           
 
 
-
-
-    # def encode(self, g, in_feat):
-    #     g = dgl.add_self_loop(g)
-
-    #     h = self.conv1(g, in_feat)
-    #     h = F.relu(h)
-    #     h = self.conv2(g, h)
-    #     return h
-    
     def encode(self, g, x):
         g = dgl.add_self_loop(g)
-        h = self.drop(F.relu(self.conv1(g, x)))  # dropout tras 1.ª capa
-        h = self.conv2(g, h)                     # última capa sin ReLU
+        h = self.conv1(g, x)
+        h = F.relu(h)
+        h = self.drop(h)  
+        h = self.conv2(g, h)                     
         return h
 
     
@@ -61,7 +47,7 @@ class GCN(nn.Module):
 
     def forward(self, g, x):
         h = self.encode(g, x)  # Embeddings
-        out = self.regressor(h).squeeze(-1)  # Predicción final
+        out = self.regressor(h)#.squeeze(-1)  # Predicción final
         return out 
 
     # def decode_all(self, z):
@@ -112,7 +98,7 @@ class GraphSAGE(nn.Module):
     
     def forward(self, g, x):
         h = self.encode(g, x)  # Embeddings
-        out = self.regressor(h).squeeze(-1)  # Predicción final
+        out = self.regressor(h) #.squeeze(-1)  # Predicción final
         return out 
        
 
@@ -167,7 +153,7 @@ class GAT(nn.Module):
 
     def forward(self, g, x):
         h = self.encode(g, x)  # Embeddings
-        out = self.regressor(h).squeeze(-1)  # Predicción final
+        out = self.regressor(h) #.squeeze(-1)  # Predicción final
         return out 
     
 
@@ -233,9 +219,14 @@ class GCNSampler(nn.Module):
 
     # g_or_blocks puede ser un DGLGraph o [Block,...]
     def encode(self, g_or_blocks, x):
-        g = _as_graph(g_or_blocks)
-        h = F.relu(self.conv1(g, x))
-        h = self.conv2(g, h)
+        # Caso 1: bloques → Neighbor Sampling
+        if isinstance(g_or_blocks, list):
+            h = F.relu(self.conv1(g_or_blocks[0], x))
+            h = self.conv2(g_or_blocks[1], h)
+        else:
+            # Caso 2: subgrafo → ClusterGCN o entrenamiento completo
+            h = F.relu(self.conv1(g_or_blocks, x))
+            h = self.conv2(g_or_blocks, h)
         return h
 
     def decodeMLP(self, g, h):
@@ -252,10 +243,16 @@ class GraphSAGESample(nn.Module):
         self.conv2 = GraphConv(hidden_feats, out_feats, allow_zero_in_degree=True)
         self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
 
+
     def encode(self, g_or_blocks, x):
-        g = _as_graph(g_or_blocks)
-        h = F.relu(self.conv1(g, x))
-        h = self.conv2(g, h)
+        # Caso 1: bloques → Neighbor Sampling
+        if isinstance(g_or_blocks, list):
+            h = F.relu(self.conv1(g_or_blocks[0], x))
+            h = self.conv2(g_or_blocks[1], h)
+        else:
+            # Caso 2: subgrafo → ClusterGCN o entrenamiento completo
+            h = F.relu(self.conv1(g_or_blocks, x))
+            h = self.conv2(g_or_blocks, h)
         return h
 
     def decodeMLP(self, g, h):
@@ -274,11 +271,17 @@ class GATSample(nn.Module):
         self.num_heads = num_heads
 
     def encode(self, g_or_blocks, x):
-        g = _as_graph(g_or_blocks)
-        h = F.relu(self.conv1(g, x))
-        h = self.conv2(g, h)                 # (N, out_feats, heads)
-        h = h.flatten(1)                     # → (N, out_feats * heads)
+        # Caso 1: bloques → Neighbor Sampling
+        if isinstance(g_or_blocks, list):
+            h = F.relu(self.conv1(g_or_blocks[0], x))
+            h = self.conv2(g_or_blocks[1], h)
+        else:
+            # Caso 2: subgrafo → ClusterGCN o entrenamiento completo
+            h = F.relu(self.conv1(g_or_blocks, x))
+            h = self.conv2(g_or_blocks, h)
+        h = h.flatten(1)  
         return h
+    
 
     def decodeMLP(self, g, h):
         return self.MLP(g, h)
