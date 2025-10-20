@@ -215,16 +215,12 @@ class GNN:
     import torch, numpy as np, dgl
 
     def split_edges_link_prediction(self, train_ratio: float = 0.8, seed: int = 42):
-        """
-        • self.train_g      : grafo para el encoder   (sin aristas POSITIVAS de test)
-        • self.train_pos_g  : aristas positivas de entrenamiento
-        • self.test_pos_g   : aristas positivas de test
-        • self.train_neg_g  : aristas negativas de entrenamiento (mismo # que pos)
-        • self.test_neg_g   : aristas negativas de test         (mismo # que pos)
-
-        NOTA: no se crea conjunto de validación aquí; si lo necesitas, adapta la
-        variable `train_ratio` o inserta un segundo corte para val.
-        """
+        
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.manual_seed(seed)
+        dgl.random.seed(seed)  # asegura consistencia en operaciones internas de DGL
+        
         g = self.dgl_graph
         num_edges  = g.num_edges()
         num_nodes  = g.num_nodes()
