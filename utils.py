@@ -180,3 +180,84 @@ def calculate_metrics(predicted_scores,true_values , threshold=None):
     print(report)  
     
     return report
+
+
+def month_name_to_number(mes: str) -> str:
+    """Convierte nombre de mes (español) a número en string con 2 dígitos.
+
+    Ejemplo: 'febrero' -> '02'
+    """
+    if mes is None:
+        raise ValueError("El mes no puede ser None")
+    mes_norm = (
+        mes.strip()
+        .lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+    )
+    mapping = {
+        "enero": "01",
+        "febrero": "02",
+        "marzo": "03",
+        "abril": "04",
+        "mayo": "05",
+        "junio": "06",
+        "julio": "07",
+        "agosto": "08",
+        "septiembre": "09",
+        "setiembre": "09",
+        "octubre": "10",
+        "noviembre": "11",
+        "diciembre": "12",
+    }
+
+    return mapping[mes_norm]
+
+
+def month_number_to_name(mes: str | int) -> str:
+    """Convierte número de mes a nombre.
+    """
+    if mes is None:
+        raise ValueError("El mes no puede ser None")
+
+    if isinstance(mes, int):
+        mes_int = mes
+    elif isinstance(mes, str):
+        mes_str = mes.strip()
+        if not mes_str:
+            raise ValueError("El mes no puede ser un string vacío")
+        try:
+            mes_int = int(mes_str)
+        except ValueError as e:
+            raise ValueError(f"Mes inválido: {mes!r}") from e
+    else:
+        raise TypeError(f"Tipo inválido para mes: {type(mes).__name__}")
+
+    mapping = {
+        1: "enero",
+        2: "febrero",
+        3: "marzo",
+        4: "abril",
+        5: "mayo",
+        6: "junio",
+        7: "julio",
+        8: "agosto",
+        9: "septiembre",
+        10: "octubre",
+        11: "noviembre",
+        12: "diciembre",
+    }
+
+    try:
+        return mapping[mes_int]
+    except KeyError as e:
+        raise ValueError(f"Mes inválido: {mes!r}") from e
+    try:
+        return mapping[mes_norm]
+    except KeyError as e:
+        raise ValueError(f"Mes inválido: {mes!r}") from e
+
