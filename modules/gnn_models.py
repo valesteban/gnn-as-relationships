@@ -6,7 +6,8 @@ import dgl
 import torch
 
 
-# ------- Link Prediction Models -------
+# Link Prediction Models
+# --------------------------
 
 # GCN
 class GCN(nn.Module):
@@ -157,7 +158,8 @@ class GAT(nn.Module):
         return out 
     
 
-# Predictor Models -------------------------------------
+# Predictor Models
+# --------------------------
 
 class MLPPredictor(nn.Module):
     def __init__(self, h_feats,out_features, drop=0.3):
@@ -202,7 +204,8 @@ class BilinearPredictor(nn.Module):
             g.apply_edges(edge_fn)
             return g.edata["score"]
 
-# CON BATCHES -------------------------------------------------------------------------------------
+# CON BATCHES
+# --------------------------
 
 #  Helper para saber si recibimos lista de blocks o grafo suelto
 def _as_graph(g_or_blocks):

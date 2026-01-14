@@ -116,17 +116,17 @@ class Graph:
     def create_topology_from_ribs(self, graph_id: str, rib_filename:str, filename_out: str ="edges.csv"):
         print("graph_id:",  graph_id)
         # 1.- Crear carpeta si no existe
-        # ---------------------------------------------
+        # --------------------------
         if not os.path.exists(self.data_path):
             os.makedirs(self.data_path)
             print(f"[CARPETA CREADA]: {self.data_path}")
 
         # 2.- Crear grafo nx de mes correspondiente
-        # ---------------------------------------------
+        # --------------------------
         nx_graph = nx.DiGraph()
 
         # 3.- Obtener aristas desde RIBs
-        # ---------------------------------------------
+        # --------------------------
         tor_dataset = []
         with open(rib_filename, "r") as archivo:
             for count,linea in enumerate(archivo):
@@ -154,11 +154,11 @@ class Graph:
                     
 
         # 4.- Crear DataFrame con aristas
-        # ---------------------------------------------
+        # --------------------------
         df_edges_new = pd.DataFrame(tor_dataset, columns=["graph_id","src_id", "dst_id"])
 
         # 5.- Guardar archivo edges.csv (append si existe)
-        # ---------------------------------------------
+        # --------------------------
         ruta_completa = os.path.join(self.data_path, filename_out)
         
         if os.path.exists(ruta_completa):
@@ -172,11 +172,11 @@ class Graph:
         df_edges.to_csv(ruta_completa, index=False, header=True)
 
         # 6.- Guardar grafo en instancia y retornar
-        # ---------------------------------------------
+        # --------------------------
         self.nx_graph = nx_graph
         
         # 7.- Print debug info
-        # ---------------------------------------------
+        # --------------------------
         if self.debug:
             print(f'[NX GRAPH]: {nx_graph}')
             print(f"[SAVE IN]: {ruta_completa}")
@@ -411,13 +411,13 @@ class Graph:
             print(f"[CARPETA CREADA]: {self.data_path}")
 
         contenido = f"""dataset_name: graphs_{self.year}
-                edge_data:
-                - file_name: {name_edges_file}.csv
-                node_data:
-                - file_name: {name_nodes_file}.csv
-                graph_data:
-                file_name: graphs.csv
-                """
+edge_data:
+- file_name: {name_edges_file}
+node_data:
+- file_name: {name_nodes_file}
+graph_data:
+  file_name: graphs.csv
+"""
 
         # Crear el archivo
         with open(os.path.join(self.data_path, "meta.yaml"), 'w') as f:
@@ -488,10 +488,12 @@ class Graph:
             print(f'[NX Graph]: {self.nx_graph} ')
 
         return self.nx_graph
+    
+
     def create_peeringdb_attr(self, nx_graph ,graph_id: str,filename_out="nodes.csv"):
                         
         # 1.- Definir ruta archivo nodos
-        # ---------------------------------------------
+        # --------------------------
         ruta_completa = os.path.join(self.data_path, filename_out)
 
         # 1.1.- Si existe el archivo, se abre en modo append ("a"), si no, se crea y se escriben los headers
@@ -502,12 +504,15 @@ class Graph:
             f.write("graph_id,node_id,feat\n")
 
         # 2.- Leer atributos 
-        # ---------------------------------------------
-        features = pd.read_csv(self.attr_path + f"node_features_{month_number_to_name(graph_id)}_{self.year}_01.csv")
+        # --------------------------
+        features = pd.read_csv(self.attr_path+ "peeringdb/attr/" + f"peeringdb_as_attr_{self.year}_{month_number_to_name(graph_id)}.csv")
         attrs = {}
 
-        # 2.1.- Por cada nodo en el grafo, buscar sus features y escribir en el archivo
-        for node in nx_graph.nodes():
+        # 2.1.- Obtener nodos únicos del grafo
+        unique_nodes = list(set(nx_graph.nodes()))
+        
+        # 2.2.- Por cada nodo único en el grafo, buscar sus features y escribir en el archivo
+        for node in unique_nodes:
             try:
                 # Buscar fila correspondiente al nodo
                 node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
@@ -523,7 +528,7 @@ class Graph:
         f.close()
 
         # 3.- Agregar atributos al grafo si se desea
-        # ---------------------------------------------
+        # --------------------------
         nx.set_node_attributes(nx_graph, attrs)
 
         if self.debug:
@@ -544,10 +549,12 @@ class Graph:
         Usa self.nx_graph que debe haber sido creado previamente.
         """
 
-        # 1.- Recolectar datos
-        # -------------------------------------------------
+        # 1.- Recolectar datos solo de nodos únicos
+        # --------------------------
+        unique_nodes = list(set(nx_graph.nodes()))
         data = []
-        for node in nx_graph.nodes():
+        
+        for node in unique_nodes:
             # 1.1 Calcular grados
             in_deg  = nx_graph.in_degree(node)
             out_deg = nx_graph.out_degree(node)
@@ -559,20 +566,20 @@ class Graph:
             data.append([graph_id, node, in_log, out_log])
 
         # 2.- Crear DataFrame 
-        # --------------------------------------------------
+        # --------------------------
         df = pd.DataFrame(
             data,
             columns=["graph_id", "node_id", "in_degree", "out_degree"],
         )
 
         # 3.- Max-Abs scaling (normaliza a un rango común [-1, 1])
-        # --------------------------------------------------
+        # --------------------------
         max_val = df[["in_degree", "out_degree"]].abs().to_numpy().max()
         if max_val != 0:
             df[["in_degree", "out_degree"]] /= max_val
 
-        # 4) Formatear columna feat 
-        # ------------------------------------------
+        # 4.- Formatear columna feat 
+        # --------------------------
         df["feat"] = df.apply(lambda r: f'{r.in_degree}, {r.out_degree}', axis=1)
         df_out = df[["graph_id", "node_id", "feat"]]
 
@@ -586,8 +593,8 @@ class Graph:
                 f.write("graph_id,node_id,feat\n")
             df_out.to_csv(f, header=False, index=False, lineterminator="\n")
 
-        # 6) Añadir atributos al grafo 
-        # ----------------------------
+        # 6.- Añadir atributos al grafo 
+        # --------------------------
         attrs = {int(r.node_id): {"features": [r.in_degree, r.out_degree]}
                 for r in df.itertuples()}
         
@@ -596,27 +603,73 @@ class Graph:
         if self.debug:
             print(f"[ATTRS CREADOS]: {len(attrs)} nodos")
 
-    # def create_meta_file(self):
+
+    def create_random_attr(self, nx_graph, graph_id: str, num_features: int = 69, filename_out="nodes.csv"):
+        """
+        Genera atributos aleatorios para cada nodo del grafo.
+        Crea num_features atributos aleatorios normalizados entre 0 y 1.
         
-    #     dataset_name = os.path.basename(os.path.normpath(self.data_path))
+        Parameters:
+            nx_graph: Grafo NetworkX
+            graph_id: ID del grafo (mes)
+            num_features: Número de features aleatorios a generar (default: 69)
+            filename_out: Nombre del archivo de salida
+        
+        Returns:
+            nx_graph con atributos agregados
+        """
+        
+        # 1.- Definir ruta archivo nodos
+        # ---------------------------------------------
+        ruta_completa = os.path.join(self.data_path, filename_out)
 
-    #     meta_data = {
-    #         'dataset_name': dataset_name,
-    #         'edge_data': [{'file_name': self.name_edges_file}],
-    #         'node_data': [{'file_name': self.name_nodes_file}]
-    #     }
+        # 1.1.- Si existe el archivo, se abre en modo append ("a"), si no, se crea y se escriben los headers
+        write_headers = not os.path.isfile(ruta_completa)
+        f = open(ruta_completa, "a")
+        if write_headers:
+            print(f"Creando archivo: {ruta_completa}")
+            f.write("graph_id,node_id,feat\n")
 
-    #     with open(os.path.join(self.data_path, 'meta.yaml'), 'w') as f:
-    #         yaml.dump(meta_data, f)
+        # 2.- Generar atributos aleatorios para cada nodo único
+        # --------------------------
+        attrs = {}
+        unique_nodes = list(set(nx_graph.nodes()))
+        
+        for node in unique_nodes:
+            # Generar num_features valores aleatorios entre 0 y 1
+            random_features = np.random.rand(num_features)
+            
+            # Convertir a string para guardar en CSV
+            node_features_str = ', '.join([str(feat) for feat in random_features])
+            line = f'{graph_id},{str(node)},"{node_features_str}"\n'
+            f.write(line)
+            
+            # Guardar en diccionario de atributos
+            attrs[node] = {'features': random_features.tolist()}
+
+        f.close()
+
+        # 3.- Agregar atributos al grafo
+        # --------------------------
+        nx.set_node_attributes(nx_graph, attrs)
+
+        if self.debug:
+            print(f'[ARCHIVO ACTUALIZADO]: {ruta_completa}')
+            print(f'[ATTRS ALEATORIOS CREADOS]: {len(attrs)} nodos con {num_features} features cada uno')
+            print('[NX GRAPH]:', nx_graph)
+        
+        return nx_graph
+
 
 def create_graphs_from_ribs(data_path:str, 
                             year:str, 
                             max_num_routes:int,
-                            attr:str= "peeringdb"):
+                            attr:str= "peeringdb",
+                            caida_file:str="",):
 
-    # 1.- Crear instancia de Graph
-    # ------------------------------------------------- 
-    graph = Graph(dataset_graph_path=data_path + f"dgl_graph/{year}/", 
+    # 1.- Crear instancia de Graph con ruta específica según tipo de atributo
+    # -------------------------- 
+    graph = Graph(dataset_graph_path=data_path + f"dgl_graph/{year}/{attr}/", 
               year=year, 
               max_paths=max_num_routes, 
               atrr_file_path=data_path,
@@ -628,17 +681,14 @@ def create_graphs_from_ribs(data_path:str,
     name_nodes_file = "nodes.csv"
 
     # 2.- Crear archivos meta.yaml 
-    # -------------------------------------------------
+    # --------------------------
     graph.create_meta_file(name_edges_file=name_edges_file, name_nodes_file=name_nodes_file)
 
-    # 3.- Crear archivo graphs.csv
-    # -------------------------------------------------
-    graph.create_graphs_file(num_months=12)
-
-    # 4.- Eliminar archivo edges.csv y nodes.csv si existen previamente
-    # -------------------------------------------------
-    path_edges = data_path + f"dgl_graph/{year}/" + name_edges_file
-    path_nodes = data_path + f"dgl_graph/{year}/" + name_nodes_file
+    # 3.- Eliminar archivos previos si existen
+    # --------------------------
+    path_edges = data_path + f"dgl_graph/{year}_{attr}/edges.csv"
+    path_nodes = data_path + f"dgl_graph/{year}_{attr}/nodes.csv"
+    path_graphs = data_path + f"dgl_graph/{year}_{attr}/graphs.csv"
 
     if os.path.exists(path_edges):
         os.remove(path_edges)
@@ -647,10 +697,16 @@ def create_graphs_from_ribs(data_path:str,
     if os.path.exists(path_nodes):
         os.remove(path_nodes)
         print(f"[ELIMINADO]: {path_nodes}")
+        
+    if os.path.exists(path_graphs):
+        os.remove(path_graphs)
+        print(f"[ELIMINADO]: {path_graphs}")
 
-    # 5.- Crear archivos edges.csv y nodes.csv para cada mes
-    # -------------------------------------------------
-    for number_month in range(1,12 + 1):
+    # 4.- Crear archivos edges.csv y nodes.csv para cada mes
+    # --------------------------
+    processed_months = []  # Lista para guardar los meses que se procesaron exitosamente
+    
+    for number_month in range(1, 12 + 1):
 
         path_ribs = data_path + f"RIBs/sanitized_rib_{month_number_to_name(number_month)}_{year}.txt"
 
@@ -658,48 +714,50 @@ def create_graphs_from_ribs(data_path:str,
 
         
 
-        # 5.1.- Ver si existe el archivo RIB
-        # -------------------------------------------------
+        # 4.1.- Ver si existe el archivo RIB
+        # --------------------------
         if not os.path.exists(path_ribs):
             print("[NO EXISTE T_T]")
         else:
             print("[SI EXISTE]")
-            # 5.2.-Crear/Agregar edges.csv a mes correspondiente
-            # ---------------------------------------------
+            # 4.2.- Crear/Agregar edges.csv a mes correspondiente
+            # --------------------------
             print("numero:", str(number_month))
             nx_graph = graph.create_topology_from_ribs(
                 rib_filename = path_ribs, 
                 graph_id = str(number_month) ,
                 filename_out ="edges.csv")
             
-            # 5.3.-Crear/Agregar nodes.csv a mes correspondiente
+            # 4.3.-Crear/Agregar nodes.csv a mes correspondiente
             if attr == "degree":
                 print("[AGREGANDO  FEATURES A NODOS]")
                 graph.create_degree_attr(nx_graph,
                                     graph_id = str(number_month) ,
                                     filename_out ="nodes.csv")
             elif attr == "random":
-                print("NO IMPLEMENTADO RANDOM FEATURES  ")
+                print("[AGREGANDO FEATURES ALEATORIOS A NODOS (69 features)]")
+                graph.create_random_attr(nx_graph,
+                                        graph_id = str(number_month),
+                                        num_features = 69,
+                                        filename_out = "nodes.csv")
             
             else:
                 print("[AGREGANDO TODAS FEATURES A NODOS DESDE PEERINGDB]")
                 graph.create_peeringdb_attr(nx_graph ,
                                             graph_id = str(number_month) ,
                                             filename_out="nodes.csv")
-
-                
             
+            # Agregar el mes a la lista de procesados
+            processed_months.append(number_month)
             
             print("[GRAFO NX]", nx_graph)
-            
-            # Revisar nodes.csv - contar nodos por graph_id
-            path_nodes = os.path.join(graph.data_path, f"dgl_datasets/{graph.year}", "nodes.csv")
-            if os.path.exists(path_nodes):
-                df_nodes = pd.read_csv(path_nodes)
-                nodes_per_graph = df_nodes.groupby("graph_id").size()
-                print("[NODOS POR GRAPH_ID]:")
-                print(nodes_per_graph)
-            else:
-                print(f"[NODES.CSV NO EXISTE]: {path_nodes}")
+
+    # 5.- Crear archivo graphs.csv con SOLO los meses que se procesaron
+    # --------------------------
+    if len(processed_months) > 0:
+        graph.create_graphs_file(num_months=len(processed_months))
+        print(f"\n[GRAPHS.CSV CREADO] con {len(processed_months)} grafos: {processed_months}")
+    else:
+        print("\n[ADVERTENCIA] No se procesó ningún mes. No se creó graphs.csv")
             
 
