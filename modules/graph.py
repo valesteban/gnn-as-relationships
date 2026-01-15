@@ -686,9 +686,9 @@ def create_graphs_from_ribs(data_path:str,
 
     # 3.- Eliminar archivos previos si existen
     # --------------------------
-    path_edges = data_path + f"dgl_graph/{year}_{attr}/edges.csv"
-    path_nodes = data_path + f"dgl_graph/{year}_{attr}/nodes.csv"
-    path_graphs = data_path + f"dgl_graph/{year}_{attr}/graphs.csv"
+    path_edges = data_path + f"dgl_graph/{year}/{attr}/edges.csv"
+    path_nodes = data_path + f"dgl_graph/{year}/{attr}/nodes.csv"
+    path_graphs = data_path + f"dgl_graph/{year}/{attr}/graphs.csv"
 
     if os.path.exists(path_edges):
         os.remove(path_edges)
