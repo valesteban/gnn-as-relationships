@@ -7,13 +7,12 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
-# python
-*.pyc
-
-# Env
 env310/
 ennv310/
+
+# Archivos test/análisis
+extra.ipynb
+EDA.ipynb
 
 # Data
 data/*
