@@ -47,9 +47,12 @@ class GCN(nn.Module):
         return self.BilinearDecoder(g, h)
 
     def forward(self, g, x):
+        """Forward para regresión de atributos de nodos.
+        Retorna predicciones para cada nodo.
+        Para link prediction, usar: encode() + decodeDotProduct/decodeMLP/decodeBilinear()
+        """
         h = self.encode(g, x)  # Embeddings
-        out = self.regressor(h)#.squeeze(-1)  # Predicción final
-        return out 
+        return self.regressor(h)  # Predicción de atributo por nodo 
 
     # def decode_all(self, z):
     #     return (z @ z.T) > 0
@@ -98,9 +101,12 @@ class GraphSAGE(nn.Module):
         return self.BilinearDecoder(g, h)
     
     def forward(self, g, x):
+        """Forward para regresión de atributos de nodos.
+        Retorna predicciones para cada nodo.
+        Para link prediction, usar: encode() + decodeDotProduct/decodeMLP/decodeBilinear()
+        """
         h = self.encode(g, x)  # Embeddings
-        out = self.regressor(h) #.squeeze(-1)  # Predicción final
-        return out 
+        return self.regressor(h)  # Predicción de atributo por nodo 
        
 
 class GAT(nn.Module):
@@ -153,9 +159,12 @@ class GAT(nn.Module):
         return self.BilinearDecoder(g, h)
 
     def forward(self, g, x):
+        """Forward para regresión de atributos de nodos.
+        Retorna predicciones para cada nodo.
+        Para link prediction, usar: encode() + decodeDotProduct/decodeMLP/decodeBilinear()
+        """
         h = self.encode(g, x)  # Embeddings
-        out = self.regressor(h) #.squeeze(-1)  # Predicción final
-        return out 
+        return self.regressor(h)  # Predicción de atributo por nodo 
     
 
 # Predictor Models
