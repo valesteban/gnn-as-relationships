@@ -1,12 +1,13 @@
-# Trabajo de Tesis: Inferencia de Relaciones AS usando GNNs
+# Trabajo: Inferencia de Relaciones AS usando GNNs
 
-Este repositorio contiene la implementación de un sistema para inferir relaciones entre Sistemas Autónomos (AS) en Internet utilizando Redes Neuronales de Grafos (GNNs). El proyecto procesa datos de BGP (Border Gateway Protocol) desde RIBs (Routing Information Base), construye grafos temporales de la topología de Internet, y entrena modelos GNN para predecir tipos de relaciones entre ASes (P2P, P2C, C2P).
+Este repositorio contiene la implementación de un sistema para inferir relaciones entre Sistemas Autónomos (AS) utilizando Redes Neuronales de Grafos (GNNs). Este recive de entrada archivos RIBs pre-procesados de datos de BGP y construye grafos de la topología de Internet. Luego entrena modelos GNN para predecir tipos de relaciones entre ASes (P2P, P2C, C2P).
 
 ## Pre-instalación
 
-- Python 3.10 o superior
-- CUDA 12.1 (opcional, para acelerar el entrenamiento con GPU)
-- Acceso a datos de BGP (RIBs) y base de datos PeeringDB
+- Python 3.10
+- Acceso a datos de BGP (RIBs) extraidos del [script para crear rutas BGP (create_bgp_routes.py)](https://github.com/niclabs/BenchmarckASRelationships/blob/main/create_bgp_routes.py)
+- Archivo CAIDA AS Relationships para las fechas seleccionadas
+- Acceso a Internet para la descarga de archivos PeeringDB
 
 ## Instalación
 
@@ -22,12 +23,9 @@ pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https
 pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html
 pip install pandas numpy matplotlib seaborn scikit-learn requests pyyaml networkx
 ```
+Estas se encuentran comentadas al comienzo de los notebooks .ipynb
 
-## Uso/Flujo de Trabajo
-
-El proyecto sigue un flujo de trabajo en 3 etapas principales:
-
-### Estructura del Proyecto
+## Estructura del Proyecto
 
 ```
 TrabajoTesis/ 
@@ -62,24 +60,27 @@ TrabajoTesis/
 └── README.md                                  # Este archivo
 ```
 
+Se puede indicar el path de la carpeta data/ en caso de estar ubicada fuera del repositorio.
+
+---
+
 ### Flujo de Trabajo Detallado
 
 #### 1. Procesamiento de Atributos de Nodos (`create_as_attr.ipynb`)
 
 Este notebook descarga y procesa datos de **PeeringDB** para extraer atributos de los Sistemas Autónomos:
 
-- **Descarga**: Obtiene dumps de PeeringDB desde el repositorio de CAIDA para cada mes del año
+- **Descarga**: Obtiene dumps de PeeringDB desde el repositorio de CAIDA.
 - **Extracción de atributos**:
   - Numéricos: `ix_count`, `fac_count`, `info_prefixes4`, `info_prefixes6`
   - Categóricos: `policy_general`, `policy_locations`, `info_traffic`, `info_scope`, `info_type`, etc.
-- **Normalización**: Aplica transformación logarítmica y normalización a atributos numéricos
-- **One-hot encoding**: Convierte atributos categóricos a vectores binarios
-- **Consistencia**: Asegura que todos los meses tengan el mismo número de columnas (features)
-- **Salida**: Archivos CSV `peeringdb_as_attr_{año}_{mes}.csv` con 69+ features por AS
+- **Normalización**: Aplica transformación logarítmica y normalización a atributos numéricos.
+- **One-hot encoding**: Convierte atributos categóricos a vectores.
+- **Salida**: Archivos CSV `peeringdb_as_attr_{año}_{mes}.csv` con 69 features por AS
 
 #### 2. Creación de Grafos (`create_graph.ipynb` o función `create_graphs_from_ribs`)
 
-Construye grafos temporales multi-mensuales de la topología de Internet:
+Construye grafos multi-mensuales de la topología de Internet:
 
 **Entrada**: 
 - Archivos RIB sanitizados (`sanitized_rib_{mes}_{año}.txt`) con rutas BGP en formato AS-path
@@ -121,13 +122,15 @@ graph = create_graphs_from_ribs(
 - `meta.yaml`: Metadatos del dataset para DGL
 
 Cada tipo de atributo se guarda en carpetas separadas:
-- `dgl_graph/2024_peeringdb/`
-- `dgl_graph/2024_degree/`
-- `dgl_graph/2024_random/`
+- `dgl_graph/2024/_peeringdb/`
+- `dgl_graph/2024/degree/`
+- `dgl_graph/2024/random/`
 
-#### 3. Entrenamiento e Inferencia (`AS_relationship_inference_gnn.ipynb`)
+#### 3. Entrenamiento e Inferencia 
 
-Entrena modelos GNN para predecir relaciones entre ASes:
+##### 3.1 Enfoque end-to-end (`AS_relationship_inference_gnn.ipynb`)
+
+Entrena modelos GNN con un enfoque end-to-enf para predecir relaciones entre ASes:
 
 **Carga del Dataset**:
 ```python
@@ -171,41 +174,33 @@ gnn.train(model, epochs=100, lr=0.001)
 - Matrices de confusión
 - Análisis por clase de relación
 
-**Salida**:
-- Modelos entrenados guardados
-- Métricas de evaluación en CSV
-- Gráficos de matrices de confusión y curvas de aprendizaje
+
+
+##### 3.1 Enfoque por partes (`train_embeddings.ipynb` y  `AS_relationship_inference.ipynb`)
+
+ Este enfoque divide el proceso de inferencia de relaciones AS en dos etapas principales:
+ 
+ **1. Generación de Embeddings (`train_embeddings.ipynb`)**
+ - Se entrenan modelos GNN (GCN, GraphSAGE, GAT) sobre el grafo de Internet para obtener representaciones vectoriales (embeddings) de los Sistemas Autónomos (AS).
+ - Las tareas de entrenamiento pueden incluir:
+     - Predicción de enlaces (link prediction) para capturar la estructura del grafo.
+     - Predicción de atributos de nodos para incorporar información adicional de los AS.
+ - Los embeddings generados se guardan para su uso posterior en la inferencia de relaciones.
+ 
+ **2. Inferencia de Relaciones (`AS_relationship_inference.ipynb`)**
+ - Utiliza los embeddings previamente generados como features para entrenar un modelo de clasificación.
+ - El objetivo es predecir el tipo de relación entre pares de AS (P2P, P2C, C2P) usando los embeddings y el dataset de relaciones de CAIDA como etiquetas.
+ - Se evalúa el desempeño del modelo mediante métricas como accuracy, precision, recall y F1-score.
+ - Permite comparar el impacto de diferentes métodos de generación de embeddings y arquitecturas GNN en la tarea de inferencia de relaciones.
+ 
+
+
 
 ### Notebooks Adicionales
 
-- **`train_embeddings.ipynb`**: Método alternativo que genera embeddings usando técnicas como DeepWalk o BGP2Vec antes de entrenar un clasificador
 - **`extra.ipynb`**: Experimentos y análisis exploratorios adicionales
 
-## Datos Requeridos
 
-1. **RIBs sanitizados**: Archivos de texto con AS-paths, uno por línea, separados por `|`
-2. **CAIDA AS Relationships**: Dataset de relaciones ground-truth (`{año}{mes}{día}.as-rel.txt.bz2`)
-3. **PeeringDB dumps**: Archivos JSON mensuales (se descargan automáticamente en `create_as_attr.ipynb`)
-
-## Resultados
-
-Los resultados del entrenamiento se guardan en la carpeta `results/` e incluyen:
-- Métricas de clasificación por época
-- Matrices de confusión
-- Modelos entrenados (checkpoints)
-- Gráficos de convergencia
-
-## Características Principales
-
-- **Grafos temporales multi-mensuales**: Permite analizar la evolución de la topología de Internet
-- **Múltiples tipos de atributos de nodos**: PeeringDB (información real), grados (topológicos), o aleatorios (baseline)
-- **Modelos GNN state-of-the-art**: GCN, GraphSAGE, GAT
-- **Pipeline completo**: Desde datos crudos hasta métricas de evaluación
-- **Reproducibilidad**: Seeds fijos y estructura organizada
-
-## Licencia
-
-Este proyecto utiliza la licencia MIT.
 
 
 
