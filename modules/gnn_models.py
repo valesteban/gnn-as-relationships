@@ -138,7 +138,9 @@ class GAT(nn.Module):
         g = dgl.add_self_loop(g)
         h = self.drop(F.relu(self.conv1(g, x)))
         h = self.conv2(g, h)
-        h = torch.flatten(h, start_dim=1, end_dim=3)
+        # Flatten desde dim=1 hasta el final (combina num_heads y out_feats)
+        # GAT produce [num_nodes, num_heads, out_feats] (3D), no 4D
+        h = torch.flatten(h, start_dim=1)
 
         return h
     
@@ -169,30 +171,7 @@ class GAT(nn.Module):
 
 # Predictor Models
 # --------------------------
-
-class MLPPredictor(nn.Module):
-    def __init__(self, h_feats,out_features, drop=0.3):
-        super().__init__()
-        # Entrada es 2 * h_feats porque porque toma las entradas de los dos nodos que comparteb una arista
-        self.W1 = nn.Linear(h_feats * 2, h_feats)
-        self.act  = nn.ReLU()
-        self.drop = nn.Dropout(drop)           # ← NUEVO
-        self.W2 = nn.Linear(h_feats, out_features)
-
-
-    def apply_edges(self, edges):
-        h = torch.cat([edges.src["h"], edges.dst["h"]], 1) # (E, 2F)
-        h1 = self.act(self.W1(h))   
-        h1 = self.drop(h1)                                       # dropout
-        out = self.W2(h1).squeeze(1)                             # (E, C)  ó  (E,) si C=1
-        return {"score": out}                             # (E, F)
-
-    def forward(self, g, h):
-        with g.local_scope():
-            g.ndata["h"] = h
-            g.apply_edges(self.apply_edges)
-            return g.edata["score"]
-
+# Nota: MLPPredictor está definido más abajo (línea ~307) con versión actualizada
 
 class BilinearPredictor(nn.Module):
     def __init__(self, h_dim, n_cls):
@@ -249,10 +228,10 @@ class GCNSampler(nn.Module):
 
 
 class GraphSAGESample(nn.Module):
-    def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1):
+    def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1, aggregator='mean'):
         super().__init__()
-        self.conv1 = GraphConv(in_feats,  hidden_feats, allow_zero_in_degree=True)
-        self.conv2 = GraphConv(hidden_feats, out_feats, allow_zero_in_degree=True)
+        self.conv1 = SAGEConv(in_feats, hidden_feats, aggregator, allow_zero_in_degree=True)
+        self.conv2 = SAGEConv(hidden_feats, out_feats, aggregator, allow_zero_in_degree=True)
         self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
 
 
@@ -304,14 +283,16 @@ class GATSample(nn.Module):
 
 class MLPPredictor(nn.Module):
     """Decodificador MLP para clasificación de aristas."""
-    def __init__(self, h_dim, n_classes):
+    def __init__(self, h_dim, n_classes, dropout=0.3):
         super().__init__()
         self.fc1 = nn.Linear(h_dim * 2, h_dim)
+        self.dropout = nn.Dropout(dropout)
         self.fc2 = nn.Linear(h_dim, n_classes)
 
     def apply_edges(self, edges):
         z = torch.cat([edges.src["h"], edges.dst["h"]], dim=1)
-        return {"score": self.fc2(F.relu(self.fc1(z))).squeeze(-1)}
+        z = self.dropout(F.relu(self.fc1(z)))
+        return {"score": self.fc2(z).squeeze(-1)}
 
     def forward(self, g, h):
         with g.local_scope():
