@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 import seaborn as sns
 from collections import Counter
+import torch
 
 
 def plot_roc_curve(true_labels, predicted_scores, optimal_threshold=None):
@@ -110,12 +111,32 @@ def plot_training(case_name,gnn,train_error,training_values_acc,val_error,valida
             accuracy_validation_per_epoch.append(accuracy_val)
 
     else:
-        # TODO: Completar!!!
-        accuracy_train_per_epoch = training_values_acc
-        accuracy_validation_per_epoch = validation_values_acc
-        # # print("[TRAINING VALUES]",training_values)
-        # print("[VALIDATION VALUES]",validation_values_acc)
-        pass
+        # Clasificación multi-clase (3 clases: P2P, C2P, P2C)
+        accuracy_train_per_epoch = []
+        accuracy_validation_per_epoch = []
+
+        for epoch_idx in range(len(training_values_acc)):
+            # Obtener las puntuaciones de esta época
+            train_scores = training_values_acc[epoch_idx]
+            val_scores = validation_values_acc[epoch_idx]
+            
+            # Obtener las etiquetas verdaderas
+            train_mask = gnn.dgl_graph.edata["train_mask"]
+            val_mask = gnn.dgl_graph.edata["val_mask"]
+            true_labels_train = gnn.dgl_graph.edata["Relationship"][train_mask]
+            true_labels_val = gnn.dgl_graph.edata["Relationship"][val_mask]
+            
+            # Convertir scores (logits) a predicciones de clase
+            # train_scores shape: [num_edges, 3] para 3 clases
+            train_pred = torch.argmax(train_scores, dim=1).cpu().numpy()
+            val_pred = torch.argmax(val_scores, dim=1).cpu().numpy()
+            
+            # Calcular accuracy
+            accuracy_train = np.mean(train_pred == true_labels_train.cpu().numpy())
+            accuracy_val = np.mean(val_pred == true_labels_val.cpu().numpy())
+            
+            accuracy_train_per_epoch.append(accuracy_train)
+            accuracy_validation_per_epoch.append(accuracy_val)
     # Figura con dos subplots (1 fila, 2 columnas)
     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
 
@@ -189,6 +210,13 @@ def month_name_to_number(mes: str) -> str:
     """
     if mes is None:
         raise ValueError("El mes no puede ser None")
+    
+    if not isinstance(mes, str):
+        raise TypeError(f"El mes debe ser string, se recibió: {type(mes).__name__}")
+    
+    if not mes.strip():
+        raise ValueError("El mes no puede ser un string vacío")
+    
     mes_norm = (
         mes.strip()
         .lower()
@@ -215,6 +243,10 @@ def month_name_to_number(mes: str) -> str:
         "diciembre": "12",
     }
 
+    if mes_norm not in mapping:
+        valid_months = ", ".join(sorted(set(mapping.keys())))
+        raise ValueError(f"Mes inválido: '{mes}'. Meses válidos: {valid_months}")
+
     return mapping[mes_norm]
 
 
@@ -237,6 +269,10 @@ def month_number_to_name(mes: str | int) -> str:
     else:
         raise TypeError(f"Tipo inválido para mes: {type(mes).__name__}")
 
+    # Validar rango antes de buscar en el diccionario
+    if not 1 <= mes_int <= 12:
+        raise ValueError(f"El mes debe estar entre 1 y 12, se recibió: {mes_int}")
+
     mapping = {
         1: "enero",
         2: "febrero",
@@ -252,12 +288,5 @@ def month_number_to_name(mes: str | int) -> str:
         12: "diciembre",
     }
 
-    try:
-        return mapping[mes_int]
-    except KeyError as e:
-        raise ValueError(f"Mes inválido: {mes!r}") from e
-    try:
-        return mapping[mes_norm]
-    except KeyError as e:
-        raise ValueError(f"Mes inválido: {mes!r}") from e
+    return mapping[mes_int]
 
