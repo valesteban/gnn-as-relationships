@@ -13,16 +13,13 @@ TOR_LABELS_DICT = {'P2P':0, 'C2P': 1,'P2C': 2}
 class GNN:
     def __init__(self, debug=False):
         self.debug = debug
-        self.graph = None
-
-        # Grafo DGL que contiene los training edges
-        self.train_graph = None
-
-        # Grafo DGL que contiene los test edges
-        self.test_graph = None
-
-        self.nx_graph = None
         self.dgl_graph = None
+        
+        # Atributos opcionales para almacenar edge IDs después de split
+        # (se asignan en split_edges_classification si store_eids=True)
+        self.train_eids = None
+        self.val_eids = None
+        self.test_eids = None
 
     def load_dataset(self,
                      data_path: str,
@@ -131,13 +128,16 @@ class GNN:
             c = Counter(self.dgl_graph.edata["Relationship"].tolist())
             print(f"[CAIDA] Conteo final de etiquetas 0/1/2/-1 → {c}")
 
-    def split_edges_classification(self, train_size=0.8, seed=0,
+    def split_edges_classification(self, train_size=0.7, val_size=0.15, seed=0,
                                 return_eids=False, store_eids=True):
         """
-        Split no-leak para edge-classification.
+        Split no-leak para edge-classification con train/val/test.
 
-        • Crea edata['train_mask'] y ['test_mask'] (igual que antes).
-        • Devuelve (train_eids, test_eids) si `return_eids=True`.
+        • train_size: fracción para entrenamiento (default 0.7 = 70%)
+        • val_size: fracción para validación (default 0.15 = 15%)
+        • test_size = 1 - train_size - val_size (default 0.15 = 15%)
+        • Crea edata['train_mask'], ['val_mask'] y ['test_mask'].
+        • Devuelve (train_eids, val_eids, test_eids) si `return_eids=True`.
         • Opcionalmente los guarda como atributos (para reutilizarlos).
         """
 
@@ -157,38 +157,50 @@ class GNN:
                 pair2eids[(min(ui, vi), max(ui, vi))].append(eid)
 
         pairs = list(pair2eids.keys());   rng.shuffle(pairs)
+        
+        # Split train/val/test
         n_train = int(len(pairs) * train_size)
-
+        n_val = int(len(pairs) * val_size)
+        
         train_pairs = pairs[:n_train]
-        test_pairs  = pairs[n_train:]
+        val_pairs   = pairs[n_train:n_train + n_val]
+        test_pairs  = pairs[n_train + n_val:]
 
         gather = lambda subset: [eid for p in subset for eid in pair2eids[p]]
         train_eids = torch.tensor(gather(train_pairs), dtype=torch.int64)
+        val_eids   = torch.tensor(gather(val_pairs),   dtype=torch.int64)
         test_eids  = torch.tensor(gather(test_pairs),  dtype=torch.int64)
 
         # 2.- Máscaras booleanas
         # --------------------------
         num_e = self.dgl_graph.num_edges()
         train_mask = torch.zeros(num_e, dtype=torch.bool)
-        test_mask  = torch.zeros_like(train_mask)
+        val_mask   = torch.zeros(num_e, dtype=torch.bool)
+        test_mask  = torch.zeros(num_e, dtype=torch.bool)
+        
         train_mask[train_eids] = True
+        val_mask[val_eids]     = True
         test_mask[test_eids]   = True
 
         self.dgl_graph.edata["train_mask"] = train_mask
+        self.dgl_graph.edata["val_mask"]   = val_mask
         self.dgl_graph.edata["test_mask"]  = test_mask
 
         # 3.- Opcional: guardo para sampling
         # --------------------------
         if store_eids:
             self.train_eids = train_eids
+            self.val_eids   = val_eids
             self.test_eids  = test_eids
 
         if self.debug:
-            
-            print("[split] train={}  test={}".format(train_mask.sum(), test_mask.sum()))
+            print(f"[split] train={train_mask.sum()}  val={val_mask.sum()}  test={test_mask.sum()}")
             print("  clases train:", dict(Counter(rel[train_mask].tolist())))
+            print("  clases val:",   dict(Counter(rel[val_mask].tolist())))
 
-        return (train_eids, test_eids) if return_eids else None
+        if return_eids:
+            return (train_eids, val_eids, test_eids)
+        return None
 
 
     def split_graph_nodes(self, train_size=0.8):
