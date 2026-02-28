@@ -85,13 +85,13 @@ class Graph:
                 # Add Edge
                 tor_dataset.append(np.asarray(line[:2]))      #seleccionamos los dos primeros elementos de la lista          
 
-                if label == -1: #P2C 
-                    # Cambiamos valor label a 1
-                    labels.append(1)
+                if label == -1:  # Relación Provider-Customer en CAIDA
+                    # Relación P2C: src es Provider de dst
+                    labels.append(2)  # P2C = 2
 
-                    # Agregamos relacion C2P 
+                    # Agregamos relacion inversa C2P: dst es Customer de src
                     tor_dataset.append(np.asarray(line[1::-1])) 
-                    labels.append(2)
+                    labels.append(1)  # C2P = 1
                 
                 else: # P2P
                     labels.append(label)
@@ -204,7 +204,8 @@ class Graph:
         features = pd.read_csv(features_filename)
         
         # Crea el archivo nodes.csv
-        f = open(self.data_path + filename_out, "w")
+        ruta_completa = os.path.join(self.data_path, filename_out)
+        f = open(ruta_completa, "w")
         # Agrega los headers
         headers = "node_id,feat\n"
         f.write(headers)
@@ -236,11 +237,18 @@ class Graph:
         if self.debug:
             print('[NX GRAPH]: ',self.nx_graph)
 
-    def label_edges_caida(self,label_edges_file,filename_out="edges.csv"):
-
+    def label_edges_caida(self, label_edges_file, filename_out="edges.csv"):
+        """Etiqueta aristas de un grafo NetworkX existente con relaciones CAIDA.
+        
+        Args:
+            label_edges_file: Ruta al archivo CAIDA comprimido (.bz2)
+            filename_out: Nombre de archivo (no usado actualmente)
+        """
+        # Validar que el archivo existe
+        if not os.path.exists(label_edges_file):
+            raise FileNotFoundError(f"Archivo CAIDA no encontrado: {label_edges_file}")
 
         nx_graph = self.nx_graph
-        
         
         with bz2.open(label_edges_file, "rb") as f:
             data = f.read()
@@ -260,14 +268,14 @@ class Graph:
                 label = int(line[2])
 
                 if nx_graph.has_edge(src, dst):
-                    if label == -1: #P2C
-                        label = 1
+                    if label == -1:  # Relación Provider-Customer
+                        label = 2  # P2C = 2 (src es Provider de dst)
 
                     nx_graph[src][dst]['Relationship'] = label
 
                 if nx_graph.has_edge(dst, src):  
-                    if label == -1:
-                        label = 2
+                    if label == -1:  # Relación Customer-Provider
+                        label = 1  # C2P = 1 (dst es Customer de src)
                     nx_graph[dst][src]['Relationship'] = label
                 
 
@@ -286,7 +294,8 @@ class Graph:
         """
 
         # Creo archivo
-        f = open(self.data_path + filename_out,"w")
+        ruta_completa = os.path.join(self.data_path, filename_out)
+        f = open(ruta_completa, "w")
         
         # Agregamos headers
         headers = "node_id,feat\n"
@@ -316,7 +325,8 @@ class Graph:
         df['out_degree'] = df['out_degree'] / max_abs_value
 
         # Guardar datos normalizados en nodes.csv
-        with open(self.data_path + filename_out, "w") as f:
+        ruta_completa = os.path.join(self.data_path, filename_out)
+        with open(ruta_completa, "w") as f:
             # Agregamos headers
             headers = "node_id,feat\n"
             f.write(headers)
@@ -326,7 +336,7 @@ class Graph:
                 node_features = f"{row['in_degree']}, {row['out_degree']}"
                 f.write(f'{row["node_id"]},"{node_features}"\n')
         if self.debug:
-            print(f"[SAVE IN]: {self.data_path+filename_out}")
+            print(f"[SAVE IN]: {ruta_completa}")
 
         # Guardamos nombre de archivo de nodos
         self.name_nodes_file = filename_out
@@ -378,16 +388,16 @@ class Graph:
         )
 
 
-        df_edges.to_csv(self.data_path + filename_out, index=False)
+        df_edges.to_csv(os.path.join(self.data_path, filename_out), index=False)
 
-        # Se lee archivo modes.csv
-        df_nodes = pd.read_csv(self.data_path + self.name_nodes_file)
+        # Se lee archivo nodes.csv
+        df_nodes = pd.read_csv(os.path.join(self.data_path, self.name_nodes_file))
 
         # Se sacan los nodos que están en list_nodes_remove
         df_nodes_filtered = df_nodes[~df_nodes['node_id'].isin(list_nodes_remove)]
 
         # Se guarda el nuevo archivo nodes.csv
-        df_nodes_filtered.to_csv(self.data_path + self.name_nodes_file, index=False)
+        df_nodes_filtered.to_csv(os.path.join(self.data_path, self.name_nodes_file), index=False)
 
         if self.debug:
             print('[NX GRAPH ELIMINANDO]: ',self.nx_graph) 
@@ -431,9 +441,10 @@ graph_data:
         graph_ids = pd.DataFrame({'graph_id': list(range(1, num_months + 1))})
 
         # Guardar el archivo
-        graph_ids.to_csv(self.data_path + "graphs.csv", index=False)
+        ruta_completa = os.path.join(self.data_path, "graphs.csv")
+        graph_ids.to_csv(ruta_completa, index=False)
 
-        print(f"[ARCHIVO GRAPHS.CSV CREADO]: {self.data_path}/graphs.csv")
+        print(f"[ARCHIVO GRAPHS.CSV CREADO]: {ruta_completa}")
 
     def create_edges_file(self, rib_filename: str, graph_id: str ,filename_out="edges.csv"):
   
