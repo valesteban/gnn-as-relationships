@@ -15,6 +15,7 @@ EDA.ipynb
 
 # Data
 data/*
+results/*
 
 
 # Resultados
@@ -26,3 +27,4 @@ data/*
 *.json
 *.txt
 *.png
+*.md

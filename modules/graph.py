@@ -7,7 +7,7 @@ import bz2
 import yaml
 import os
 
-from utils import month_number_to_name
+from src.utils import month_number_to_name
 
 
 class Graph:
@@ -36,6 +36,89 @@ class Graph:
 
         # Debug mode
         self.debug = debug
+        
+        # Mapeo ASN → node_id y viceversa
+        self.asn_to_id = {}  # {asn: node_id}
+        self.id_to_asn = {}  # {node_id: asn}
+        self.next_node_id = 0  # Contador para asignar IDs secuenciales
+
+    def get_or_create_node_id(self, asn: int) -> int:
+        """Obtiene el node_id para un ASN, o crea uno nuevo si no existe.
+        
+        Args:
+            asn: Número de Sistema Autónomo
+            
+        Returns:
+            node_id: Identificador interno del nodo
+        """
+        if asn not in self.asn_to_id:
+            node_id = self.next_node_id
+            self.asn_to_id[asn] = node_id
+            self.id_to_asn[node_id] = asn
+            self.next_node_id += 1
+            return node_id
+        return self.asn_to_id[asn]
+    
+    def get_asn_from_id(self, node_id: int) -> int:
+        """Obtiene el ASN correspondiente a un node_id.
+        
+        Args:
+            node_id: Identificador interno del nodo
+            
+        Returns:
+            asn: Número de Sistema Autónomo
+        """
+        return self.id_to_asn.get(node_id, None)
+    
+    def save_asn_mapping(self, filename="asn_mapping.csv", node_ids=None):
+        """Guarda el mapeo ASN → node_id en un archivo CSV.
+        
+        Args:
+            filename: Nombre del archivo donde guardar el mapeo
+            node_ids: Iterable opcional de node_id a incluir. Si es None,
+                      se guardará el mapeo completo acumulado.
+        """
+        ruta_completa = os.path.join(self.data_path, filename)
+        
+        if node_ids is None:
+            # Guardar mapeo completo
+            node_items = sorted(self.id_to_asn.items())
+            df_mapping = pd.DataFrame({
+                'node_id': [k for k, _ in node_items],
+                'asn': [v for _, v in node_items]
+            })
+        else:
+            # Guardar solo el subconjunto de node_ids provisto (p. ej. nodos de un mes)
+            filtered = [(nid, self.id_to_asn.get(int(nid))) for nid in sorted(map(int, node_ids))]
+            df_mapping = pd.DataFrame({
+                'node_id': [k for k, _ in filtered],
+                'asn': [v for _, v in filtered]
+            })
+        
+        df_mapping = df_mapping.sort_values('node_id')
+        df_mapping.to_csv(ruta_completa, index=False)
+        
+        if self.debug:
+            print(f"[MAPEO ASN GUARDADO]: {ruta_completa}")
+    
+    def load_asn_mapping(self, filename="asn_mapping.csv"):
+        """Carga el mapeo ASN → node_id desde un archivo CSV.
+        
+        Args:
+            filename: Nombre del archivo desde donde cargar el mapeo
+        """
+        ruta_completa = os.path.join(self.data_path, filename)
+        if not os.path.exists(ruta_completa):
+            raise FileNotFoundError(f"Archivo de mapeo no encontrado: {ruta_completa}")
+        
+        df_mapping = pd.read_csv(ruta_completa)
+        self.asn_to_id = dict(zip(df_mapping['asn'], df_mapping['node_id']))
+        self.id_to_asn = dict(zip(df_mapping['node_id'], df_mapping['asn']))
+        self.next_node_id = max(self.id_to_asn.keys()) + 1 if self.id_to_asn else 0
+        
+        if self.debug:
+            print(f"[MAPEO ASN CARGADO]: {ruta_completa}")
+            print(f"[INFO] {len(self.asn_to_id)} ASNs mapeados")
 
 
     def create_graph_from_caida(self, filename:str, filename_out="edges.csv"):
@@ -55,12 +138,11 @@ class Graph:
 
         nx_graph = nx.DiGraph()
 
-
         with bz2.open(filename, "rb") as f:
             data = f.read()
             lines = data.decode().splitlines()
 
-            tor_dataset = []
+            edge_list = []  # Lista de aristas con node_ids
             labels = []
             
             for count, line in enumerate(lines):
@@ -69,49 +151,51 @@ class Graph:
                 if count == self.max_paths:
                     break
                 
-
                 first_char = line[0]
-
                 if first_char == "#":
                     continue
             
                 line = line.split("|")
 
-                # for nx
-                src = int(line[0])
-                dst = int(line[1])
+                # Obtener ASNs
+                src_asn = int(line[0])
+                dst_asn = int(line[1])
                 label = int(line[2])
+                
+                # Convertir ASN a node_id
+                src_id = self.get_or_create_node_id(src_asn)
+                dst_id = self.get_or_create_node_id(dst_asn)
 
-                # Add Edge
-                tor_dataset.append(np.asarray(line[:2]))      #seleccionamos los dos primeros elementos de la lista          
+                # Add Edge con node_ids
+                edge_list.append([src_id, dst_id])
 
                 if label == -1:  # Relación Provider-Customer en CAIDA
                     # Relación P2C: src es Provider de dst
                     labels.append(2)  # P2C = 2
 
                     # Agregamos relacion inversa C2P: dst es Customer de src
-                    tor_dataset.append(np.asarray(line[1::-1])) 
+                    edge_list.append([dst_id, src_id]) 
                     labels.append(1)  # C2P = 1
                 
                 else: # P2P
                     labels.append(label)
-                    tor_dataset.append(np.asarray(line[1::-1])) 
+                    edge_list.append([dst_id, src_id]) 
                     labels.append(label)
         
-        # Creamos DataFrame
-        df_edges = pd.DataFrame(tor_dataset, columns=["src_id", "dst_id"])
+        # Creamos DataFrame con node_ids
+        df_edges = pd.DataFrame(edge_list, columns=["src_id", "dst_id"])
         df_edges['Relationship'] = labels
 
-        # Creamoss archivo edges.csv
+        # Guardamos archivo edges.csv
         df_edges.to_csv(self.data_path+"edges.csv", index=False)
         self.name_edges_file = filename_out
 
-
-        # Creamoss archivo edges.csv
+        # Creamos grafo NetworkX con node_ids
         self.nx_graph = nx.from_pandas_edgelist(df_edges, "src_id", "dst_id", edge_attr=["Relationship"], create_using=nx.DiGraph())
                 
         if self.debug:
-                print('[NX GRAPH]: ',self.nx_graph)
+            print('[NX GRAPH]: ',self.nx_graph)
+            print(f'[MAPEO] Total ASNs mapeados: {len(self.asn_to_id)}')
 
     def create_topology_from_ribs(self, graph_id: str, rib_filename:str, filename_out: str ="edges.csv"):
         print("graph_id:",  graph_id)
@@ -121,13 +205,13 @@ class Graph:
             os.makedirs(self.data_path)
             print(f"[CARPETA CREADA]: {self.data_path}")
 
-        # 2.- Crear grafo nx de mes correspondiente
+        # 2.- Crear grafo nx de mes correspondiente (usando node_ids)
         # --------------------------
         nx_graph = nx.DiGraph()
 
         # 3.- Obtener aristas desde RIBs
         # --------------------------
-        tor_dataset = []
+        edge_list = []
         with open(rib_filename, "r") as archivo:
             for count,linea in enumerate(archivo):
 
@@ -145,17 +229,23 @@ class Graph:
 
                 # 3.4.- Recorrer la lista y agregar conexiones entre AS consecutivos
                 for i in range(len(as_list) - 1):
-                    origen = as_list[i]
-                    destino = as_list[i + 1]
-                    nx_graph.add_edge(origen, destino)
+                    asn_origen = as_list[i]
+                    asn_destino = as_list[i + 1]
+                    
+                    # Convertir ASN a node_id
+                    origen_id = self.get_or_create_node_id(asn_origen)
+                    destino_id = self.get_or_create_node_id(asn_destino)
+                    
+                    # Agregar arista al grafo NetworkX (con node_ids)
+                    nx_graph.add_edge(origen_id, destino_id)
 
-                    # 3.5.- Agregar arista
-                    tor_dataset.append(np.asarray([graph_id,origen, destino]))   
+                    # 3.5.- Agregar arista a la lista (con node_ids)
+                    edge_list.append([graph_id, origen_id, destino_id])   
                     
 
-        # 4.- Crear DataFrame con aristas
+        # 4.- Crear DataFrame con aristas (node_ids)
         # --------------------------
-        df_edges_new = pd.DataFrame(tor_dataset, columns=["graph_id","src_id", "dst_id"])
+        df_edges_new = pd.DataFrame(edge_list, columns=["graph_id","src_id", "dst_id"])
 
         # 5.- Guardar archivo edges.csv (append si existe)
         # --------------------------
@@ -180,20 +270,18 @@ class Graph:
         if self.debug:
             print(f'[NX GRAPH]: {nx_graph}')
             print(f"[SAVE IN]: {ruta_completa}")
+            print(f'[MAPEO] Total ASNs mapeados: {len(self.asn_to_id)}')
         
         return nx_graph
         
 
     def features_nodes(self,features_filename,filename_out="nodes.csv"):
         """
-        Crea un archivo nodes.csv con los nodos id y sus características.
-        Si no se especifica una lista de características, se incluyen todas.
+        Crea un archivo nodes.csv con los nodos id, asn y sus características.
         Ya existe nx_graph, sin attr de nodos.
 
         Parameters:
             features_filename (str): Ruta al archivo de características.
-            list_feat (list or str, optional): Lista de prefijos de características a incluir. Si es "all", se incluyen todas las características. Por defecto es "all".
-            normalize (bool, optional): Indica si se deben normalizar los valores no categóricos. Por defecto es False.
             filename_out (str, optional): Nombre del archivo de salida. Por defecto es "nodes.csv".
 
         Returns:
@@ -206,30 +294,35 @@ class Graph:
         # Crea el archivo nodes.csv
         ruta_completa = os.path.join(self.data_path, filename_out)
         f = open(ruta_completa, "w")
-        # Agrega los headers
-        headers = "node_id,feat\n"
+        # Agrega los headers (incluyendo asn)
+        headers = "node_id,asn,feat\n"
         f.write(headers)
 
         empty_info = 0
         # Por cada nodo en la topología, lo agrego en el archivo nodes.csv con sus features
         attrs = {}
-        for node in self.nx_graph.nodes():
+        for node_id in self.nx_graph.nodes():
+            # Obtener el ASN correspondiente al node_id
+            asn = self.get_asn_from_id(node_id)
+            
             try:
-                # Filtra las filas correspondientes al nodo y obtiene los features seleccionados
-                node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
+                # Filtra las filas correspondientes al ASN y obtiene los features seleccionados
+                node_features = features.loc[features['ASN'] == int(asn)].fillna(0).to_numpy()[0].tolist()[1:]
                 
             except IndexError:
                 node_features = [0] * len(features.columns[1:])  # Asignar ceros si no se encuentra el nodo
+                empty_info += 1
 
-            node_features = ', '.join([str(feature) for feature in node_features]) 
-            w = f'{str(node)},"{node_features}"\n'
+            node_features_str = ', '.join([str(feature) for feature in node_features]) 
+            w = f'{node_id},{asn},"{node_features_str}"\n'
             f.write(w)
             # Guardamos los features como diccionario para agregarlos al grafo si se desea
-            attrs[node] = {'features': node_features}
+            attrs[node_id] = {'asn': asn, 'features': node_features_str}
         
         f.close()
         self.name_nodes_file = filename_out
-        # print(f"[ARCHIVO NODES.CSV CREADO], {empty_info} nodos sin features")
+        if self.debug:
+            print(f"[ARCHIVO NODES.CSV CREADO], {empty_info} nodos sin features")
 
         # Agregamos attrinbutos a los nodos 
         nx.set_node_attributes(self.nx_graph, attrs)
@@ -263,30 +356,37 @@ class Graph:
                     continue
             
                 line = line.split("|")
-                src = int(line[0])
-                dst = int(line[1])
+                src_asn = int(line[0])
+                dst_asn = int(line[1])
                 label = int(line[2])
+                
+                # Convertir ASN a node_id
+                src_id = self.asn_to_id.get(src_asn)
+                dst_id = self.asn_to_id.get(dst_asn)
+                
+                # Solo etiquetar si ambos ASN existen en el grafo
+                if src_id is None or dst_id is None:
+                    continue
 
-                if nx_graph.has_edge(src, dst):
+                if nx_graph.has_edge(src_id, dst_id):
                     if label == -1:  # Relación Provider-Customer
                         label = 2  # P2C = 2 (src es Provider de dst)
 
-                    nx_graph[src][dst]['Relationship'] = label
+                    nx_graph[src_id][dst_id]['Relationship'] = label
 
-                if nx_graph.has_edge(dst, src):  
+                if nx_graph.has_edge(dst_id, src_id):  
                     if label == -1:  # Relación Customer-Provider
                         label = 1  # C2P = 1 (dst es Customer de src)
-                    nx_graph[dst][src]['Relationship'] = label
+                    nx_graph[dst_id][src_id]['Relationship'] = label
                 
 
 
 
     def only_degree_features_nodes(self,filename_out="nodes.csv"):
         """
-        Crea un archivo nodes.csv que consiste en node_id y attr correspondientes a node_degree_in y npde_degree_out.
+        Crea un archivo nodes.csv que consiste en node_id, asn y attr correspondientes a node_degree_in y node_degree_out.
 
         Parameters:
-            features_filename (str): Ruta al archivo de características.
             filename_out (str, optional): Nombre del archivo de salida. Por defecto es "nodes.csv".
 
         Returns:
@@ -297,7 +397,36 @@ class Graph:
         ruta_completa = os.path.join(self.data_path, filename_out)
         f = open(ruta_completa, "w")
         
-        # Agregamos headers
+        # Agregamos headers (incluyendo asn)
+        headers = "node_id,asn,feat\n"
+        f.write(headers)
+
+        # Por cada nodo en la topología, lo agrego en el archivo nodes.csv con sus features
+        attrs = {}
+        for node_id in self.nx_graph.nodes():
+            # Obtener el ASN correspondiente al node_id
+            asn = self.get_asn_from_id(node_id)
+            
+            # Obtener grados de entrada y salida
+            in_degree = self.nx_graph.in_degree(node_id)
+            out_degree = self.nx_graph.out_degree(node_id)
+            
+            # Escribir en el archivo: node_id, asn, [in_degree, out_degree]
+            w = f'{node_id},{asn},"{in_degree},{out_degree}"\n'
+            f.write(w)
+            
+            # Guardamos los features como diccionario para agregarlos al grafo si se desea
+            attrs[node_id] = {'asn': asn, 'in_degree': in_degree, 'out_degree': out_degree}
+        
+        f.close()
+        self.name_nodes_file = filename_out
+
+        # Agregamos attrinbutos a los nodos 
+        nx.set_node_attributes(self.nx_graph, attrs)
+
+        if self.debug:
+            print('[ARCHIVO NODES.CSV CREADO CON GRADOS]')
+            print('[NX GRAPH]: ',self.nx_graph)
         headers = "node_id,feat\n"
         f.write(headers)
 
@@ -512,7 +641,7 @@ graph_data:
         f = open(ruta_completa, "a")
         if write_headers:
             print(f"Creando archivo: {ruta_completa}")
-            f.write("graph_id,node_id,feat\n")
+            f.write("graph_id,node_id,asn,feat\n")  # ✨ Agregada columna asn
 
         # 2.- Leer atributos 
         # --------------------------
@@ -523,18 +652,21 @@ graph_data:
         unique_nodes = list(set(nx_graph.nodes()))
         
         # 2.2.- Por cada nodo único en el grafo, buscar sus features y escribir en el archivo
-        for node in unique_nodes:
+        for node_id in unique_nodes:
+            # ✨ Obtener ASN correspondiente al node_id
+            asn = self.get_asn_from_id(node_id)
+            
             try:
-                # Buscar fila correspondiente al nodo
-                node_features = features.loc[features['ASN'] == int(node)].fillna(0).to_numpy()[0].tolist()[1:]
+                # Buscar fila correspondiente al ASN (no al node_id)
+                node_features = features.loc[features['ASN'] == int(asn)].fillna(0).to_numpy()[0].tolist()[1:]
             except IndexError:
                 node_features = [0] * (features.shape[1] - 1)
 
             node_features_str = ', '.join([str(feat) for feat in node_features])
-            line = f'{graph_id},{str(node)},"{node_features_str}"\n'
+            line = f'{graph_id},{node_id},{asn},"{node_features_str}"\n'  # ✨ Incluye asn
             f.write(line)
 
-            attrs[node] = {'features': node_features}
+            attrs[node_id] = {'asn': asn, 'features': node_features}  # ✨ Incluye asn
 
         f.close()
 
@@ -555,7 +687,7 @@ graph_data:
         """
         Calcula atributos de in/out-degree log-escala y los guarda/actualiza
         en nodes.csv con formato:
-            graph_id,node_id,feat
+            graph_id,node_id,asn,feat
         donde feat = "in_norm, out_norm".
         Usa self.nx_graph que debe haber sido creado previamente.
         """
@@ -565,22 +697,25 @@ graph_data:
         unique_nodes = list(set(nx_graph.nodes()))
         data = []
         
-        for node in unique_nodes:
+        for node_id in unique_nodes:
+            # Obtener ASN correspondiente
+            asn = self.get_asn_from_id(node_id)
+            
             # 1.1 Calcular grados
-            in_deg  = nx_graph.in_degree(node)
-            out_deg = nx_graph.out_degree(node)
+            in_deg  = nx_graph.in_degree(node_id)
+            out_deg = nx_graph.out_degree(node_id)
             
             # 1.2 Normalización logarítmica (maneja la distribución de grados)
             in_log  = np.log1p(in_deg)       # log(x + 1)
             out_log = np.log1p(out_deg)
 
-            data.append([graph_id, node, in_log, out_log])
+            data.append([graph_id, node_id, asn, in_log, out_log])
 
         # 2.- Crear DataFrame 
         # --------------------------
         df = pd.DataFrame(
             data,
-            columns=["graph_id", "node_id", "in_degree", "out_degree"],
+            columns=["graph_id", "node_id", "asn", "in_degree", "out_degree"],
         )
 
         # 3.- Max-Abs scaling (normaliza a un rango común [-1, 1])
@@ -592,7 +727,7 @@ graph_data:
         # 4.- Formatear columna feat 
         # --------------------------
         df["feat"] = df.apply(lambda r: f'{r.in_degree}, {r.out_degree}', axis=1)
-        df_out = df[["graph_id", "node_id", "feat"]]
+        df_out = df[["graph_id", "node_id", "asn", "feat"]]
 
         # 5) Escribir/Guardar  ------------------------------------------------
         ruta_csv = os.path.join(self.data_path, filename_out)
@@ -601,12 +736,12 @@ graph_data:
 
         with open(ruta_csv, mode) as f:
             if write_hdr:
-                f.write("graph_id,node_id,feat\n")
+                f.write("graph_id,node_id,asn,feat\n")
             df_out.to_csv(f, header=False, index=False, lineterminator="\n")
 
         # 6.- Añadir atributos al grafo 
         # --------------------------
-        attrs = {int(r.node_id): {"features": [r.in_degree, r.out_degree]}
+        attrs = {int(r.node_id): {"asn": r.asn, "features": [r.in_degree, r.out_degree]}
                 for r in df.itertuples()}
         
         nx.set_node_attributes(nx_graph, attrs)
@@ -639,24 +774,27 @@ graph_data:
         f = open(ruta_completa, "a")
         if write_headers:
             print(f"Creando archivo: {ruta_completa}")
-            f.write("graph_id,node_id,feat\n")
+            f.write("graph_id,node_id,asn,feat\n")  # ✨ Agregada columna asn
 
         # 2.- Generar atributos aleatorios para cada nodo único
         # --------------------------
         attrs = {}
         unique_nodes = list(set(nx_graph.nodes()))
         
-        for node in unique_nodes:
+        for node_id in unique_nodes:
+            # ✨ Obtener ASN correspondiente al node_id
+            asn = self.get_asn_from_id(node_id)
+            
             # Generar num_features valores aleatorios entre 0 y 1
             random_features = np.random.rand(num_features)
             
             # Convertir a string para guardar en CSV
             node_features_str = ', '.join([str(feat) for feat in random_features])
-            line = f'{graph_id},{str(node)},"{node_features_str}"\n'
+            line = f'{graph_id},{node_id},{asn},"{node_features_str}"\n'  # ✨ Incluye asn
             f.write(line)
             
             # Guardar en diccionario de atributos
-            attrs[node] = {'features': random_features.tolist()}
+            attrs[node_id] = {'asn': asn, 'features': random_features.tolist()}  # ✨ Incluye asn
 
         f.close()
 
@@ -762,6 +900,15 @@ def create_graphs_from_ribs(data_path:str,
             processed_months.append(number_month)
             
             print("[GRAFO NX]", nx_graph)
+            
+            # Guardar snapshot del mapeo para este mes (solo nodos que aparecen en el grafo de mes)
+            try:
+                month_name = month_number_to_name(number_month)
+                month_map_filename = f"asn_mapping_{month_name}.csv"
+                # Guardamos en la misma carpeta data_path + dgl_graph/{year}/{attr}/
+                graph.save_asn_mapping(filename=month_map_filename, node_ids=list(nx_graph.nodes()))
+            except Exception as e:
+                print(f"[WARNING] No se pudo guardar asn_mapping para {number_month}: {e}")
 
     # 5.- Crear archivo graphs.csv con SOLO los meses que se procesaron
     # --------------------------
@@ -770,5 +917,10 @@ def create_graphs_from_ribs(data_path:str,
         print(f"\n[GRAPHS.CSV CREADO] con {len(processed_months)} grafos: {processed_months}")
     else:
         print("\n[ADVERTENCIA] No se procesó ningún mes. No se creó graphs.csv")
-            
-
+    
+    # 6.- Guardar mapeo ASN → node_id
+    # --------------------------
+    graph.save_asn_mapping()
+    print(f"\n[MAPEO ASN GUARDADO] Total de ASNs: {len(graph.asn_to_id)}")
+    
+    return graph
