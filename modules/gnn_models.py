@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
-from dgl.nn import SAGEConv, GraphConv, GATConv, GINConv, GatedGCNConv, GatedGraphConv
+from dgl.nn import SAGEConv, GraphConv, GATConv
 import dgl.function as fn
 import dgl
 import torch
@@ -15,7 +15,11 @@ class GCN(nn.Module):
         super().__init__()
         self.conv1 = GraphConv(in_feats, hidden_feats)
         self.conv2 = GraphConv(hidden_feats, out_feats)
-    
+        self.bn1 = nn.BatchNorm1d(hidden_feats)
+        self.bn2 = nn.BatchNorm1d(out_feats)
+        self.res1 = nn.Linear(in_feats, hidden_feats, bias=False)
+        self.res2 = nn.Linear(hidden_feats, out_feats, bias=False)
+
         self.MLP = MLPPredictor(out_feats,out_feats_mlp)
         self.BilinearDecoder = BilinearPredictor(out_feats, 3)
         self.regressor = nn.Linear(out_feats, 1)
@@ -24,10 +28,9 @@ class GCN(nn.Module):
 
     def encode(self, g, x):
         g = dgl.add_self_loop(g)
-        h = self.conv1(g, x)
-        h = F.relu(h)
-        h = self.drop(h)  
-        h = self.conv2(g, h)                     
+        h = F.relu(self.bn1(self.conv1(g, x)) + self.res1(x))
+        h = self.drop(h)
+        h = self.bn2(self.conv2(g, h) + self.res2(h))
         return h
 
     
@@ -62,6 +65,10 @@ class GraphSAGE(nn.Module):
         super().__init__()  # ✅ Esto es lo correcto
         self.conv1 = SAGEConv(in_feats, hidden_feats, 'mean')
         self.conv2 = SAGEConv(hidden_feats, out_feats, 'mean')
+        self.bn1 = nn.BatchNorm1d(hidden_feats)
+        self.bn2 = nn.BatchNorm1d(out_feats)
+        self.res1 = nn.Linear(in_feats, hidden_feats, bias=False)
+        self.res2 = nn.Linear(hidden_feats, out_feats, bias=False)
 
         self.MLP = MLPPredictor(out_feats,out_feats_mlp)
         # Decodificador para prediccion de aristas
@@ -80,8 +87,8 @@ class GraphSAGE(nn.Module):
     #     return h
     
     def encode(self, g, x):
-        h = self.drop(F.relu(self.conv1(g, x)))
-        h = self.conv2(g, h)
+        h = self.drop(F.relu(self.bn1(self.conv1(g, x)) + self.res1(x)))
+        h = self.bn2(self.conv2(g, h) + self.res2(h))
         return h
     
     def decodeDotProduct(self, g, h):
@@ -113,14 +120,18 @@ class GAT(nn.Module):
     def __init__(self, in_feats, hidden_feats,  out_feats, out_feats_mlp=1,num_heads=1, drop=0.3):
         super().__init__()
         self.conv1 = GATConv(in_feats, hidden_feats, num_heads)
-        self.conv2 = GATConv(hidden_feats, out_feats, num_heads)
+        self.conv2 = GATConv(hidden_feats * num_heads, out_feats, num_heads)
+        self.bn1 = nn.BatchNorm1d(hidden_feats * num_heads)
+        self.bn2 = nn.BatchNorm1d(out_feats * num_heads)
+        self.res1 = nn.Linear(in_feats, hidden_feats * num_heads, bias=False)
+        self.res2 = nn.Linear(hidden_feats * num_heads, out_feats * num_heads, bias=False)
 
-        self.MLP = MLPPredictor(out_feats,out_feats_mlp)
+        self.MLP = MLPPredictor(out_feats * num_heads, out_feats_mlp)
         # Decodificador para prediccion de aristas
-        self.BilinearDecoder = BilinearPredictor(out_feats, 3)
+        self.BilinearDecoder = BilinearPredictor(out_feats * num_heads, 3)
 
         # Regresor para prediccion atributo
-        self.regressor = nn.Linear(out_feats, 1)
+        self.regressor = nn.Linear(out_feats * num_heads, 1)
 
         self.drop  = nn.Dropout(drop)
 
@@ -136,12 +147,8 @@ class GAT(nn.Module):
     
     def encode(self, g, x):
         g = dgl.add_self_loop(g)
-        h = self.drop(F.relu(self.conv1(g, x)))
-        h = self.conv2(g, h)
-        # Flatten desde dim=1 hasta el final (combina num_heads y out_feats)
-        # GAT produce [num_nodes, num_heads, out_feats] (3D), no 4D
-        h = torch.flatten(h, start_dim=1)
-
+        h = self.drop(F.relu(self.bn1(self.conv1(g, x).flatten(1)) + self.res1(x)))
+        h = self.bn2(self.conv2(g, h).flatten(1) + self.res2(h))
         return h
     
     def decodeDotProduct(self, g, h):
@@ -176,8 +183,9 @@ class GAT(nn.Module):
 class BilinearPredictor(nn.Module):
     def __init__(self, h_dim, n_cls):
         super().__init__()
-        self.W = nn.Parameter(torch.randn(n_cls, h_dim, h_dim))  # (C,F,F)
-        self.b = nn.Parameter(torch.zeros(n_cls))                # (C,)
+        # Scale by 1/h_dim so initial logits are O(1) instead of O(h_dim^2)
+        self.W = nn.Parameter(torch.randn(n_cls, h_dim, h_dim) / h_dim)  # (C,F,F)
+        self.b = nn.Parameter(torch.zeros(n_cls))                         # (C,)
 
     def forward(self, g, h):                 # → logits (E, C)
         with g.local_scope():
@@ -201,23 +209,25 @@ def _as_graph(g_or_blocks):
     return g_or_blocks[0] if isinstance(g_or_blocks, list) else g_or_blocks
 
 
+
 class GCNSampler(nn.Module):
     def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1):
         super().__init__()
-        self.conv1 = GraphConv(in_feats,  hidden_feats, allow_zero_in_degree=True)
+        self.conv1 = GraphConv(in_feats, hidden_feats, allow_zero_in_degree=True)
+        self.bn1   = nn.BatchNorm1d(hidden_feats)
         self.conv2 = GraphConv(hidden_feats, out_feats, allow_zero_in_degree=True)
+        self.bn2   = nn.BatchNorm1d(out_feats)
         self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
 
-    # g_or_blocks puede ser un DGLGraph o [Block,...]
     def encode(self, g_or_blocks, x):
-        # Caso 1: bloques → Neighbor Sampling
         if isinstance(g_or_blocks, list):
-            h = F.relu(self.conv1(g_or_blocks[0], x))
-            h = self.conv2(g_or_blocks[1], h)
+            # Neighbor Sampling: g_or_blocks es una lista de bloques
+            h = F.relu(self.bn1(self.conv1(g_or_blocks[0], x)))
+            h = self.bn2(self.conv2(g_or_blocks[1], h))
         else:
-            # Caso 2: subgrafo → ClusterGCN o entrenamiento completo
-            h = F.relu(self.conv1(g_or_blocks, x))
-            h = self.conv2(g_or_blocks, h)
+            # ClusterGCN o grafo completo
+            h = F.relu(self.bn1(self.conv1(g_or_blocks, x)))
+            h = self.bn2(self.conv2(g_or_blocks, h))
         return h
 
     def decodeMLP(self, g, h):
@@ -230,20 +240,19 @@ class GCNSampler(nn.Module):
 class GraphSAGESample(nn.Module):
     def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1, aggregator='mean'):
         super().__init__()
-        self.conv1 = SAGEConv(in_feats, hidden_feats, aggregator, allow_zero_in_degree=True)
-        self.conv2 = SAGEConv(hidden_feats, out_feats, aggregator, allow_zero_in_degree=True)
+        self.conv1 = SAGEConv(in_feats, hidden_feats, aggregator)
+        self.bn1   = nn.BatchNorm1d(hidden_feats)
+        self.conv2 = SAGEConv(hidden_feats, out_feats, aggregator)
+        self.bn2   = nn.BatchNorm1d(out_feats)
         self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
 
-
     def encode(self, g_or_blocks, x):
-        # Caso 1: bloques → Neighbor Sampling
         if isinstance(g_or_blocks, list):
-            h = F.relu(self.conv1(g_or_blocks[0], x))
-            h = self.conv2(g_or_blocks[1], h)
+            h = F.relu(self.bn1(self.conv1(g_or_blocks[0], x)))
+            h = self.bn2(self.conv2(g_or_blocks[1], h))
         else:
-            # Caso 2: subgrafo → ClusterGCN o entrenamiento completo
-            h = F.relu(self.conv1(g_or_blocks, x))
-            h = self.conv2(g_or_blocks, h)
+            h = F.relu(self.bn1(self.conv1(g_or_blocks, x)))
+            h = self.bn2(self.conv2(g_or_blocks, h))
         return h
 
     def decodeMLP(self, g, h):
@@ -256,23 +265,23 @@ class GraphSAGESample(nn.Module):
 class GATSample(nn.Module):
     def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1, num_heads=1):
         super().__init__()
-        self.conv1 = GATConv(in_feats, hidden_feats, num_heads, allow_zero_in_degree=True)
-        self.conv2 = GATConv(hidden_feats, out_feats, num_heads, allow_zero_in_degree=True)
-        self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
         self.num_heads = num_heads
+        # conv1: salida [N, num_heads, hidden_feats] → se aplana a [N, num_heads*hidden_feats]
+        self.conv1 = GATConv(in_feats, hidden_feats, num_heads, allow_zero_in_degree=True)
+        self.bn1   = nn.BatchNorm1d(hidden_feats * num_heads)
+        # conv2: entrada [N, num_heads*hidden_feats] → salida [N, num_heads, out_feats]
+        self.conv2 = GATConv(hidden_feats * num_heads, out_feats, num_heads, allow_zero_in_degree=True)
+        self.bn2   = nn.BatchNorm1d(out_feats * num_heads)
+        self.MLP   = MLPPredictor(out_feats * num_heads, out_feats_mlp)
 
     def encode(self, g_or_blocks, x):
-        # Caso 1: bloques → Neighbor Sampling
         if isinstance(g_or_blocks, list):
-            h = F.relu(self.conv1(g_or_blocks[0], x))
-            h = self.conv2(g_or_blocks[1], h)
+            h = F.relu(self.bn1(self.conv1(g_or_blocks[0], x).flatten(1)))
+            h = self.bn2(self.conv2(g_or_blocks[1], h).flatten(1))
         else:
-            # Caso 2: subgrafo → ClusterGCN o entrenamiento completo
-            h = F.relu(self.conv1(g_or_blocks, x))
-            h = self.conv2(g_or_blocks, h)
-        h = h.flatten(1)  
+            h = F.relu(self.bn1(self.conv1(g_or_blocks, x).flatten(1)))
+            h = self.bn2(self.conv2(g_or_blocks, h).flatten(1))
         return h
-    
 
     def decodeMLP(self, g, h):
         return self.MLP(g, h)
@@ -282,17 +291,28 @@ class GATSample(nn.Module):
 
 
 class MLPPredictor(nn.Module):
-    """Decodificador MLP para clasificación de aristas."""
+    """Decodificador MLP para clasificación de aristas.
+
+    Usa [h_u | h_v | h_u - h_v | h_u * h_v] como feature de arista,
+    capturando tanto información absoluta como la asimetría direccional
+    (clave para distinguir C2P de P2C en el grafo de Internet).
+    """
     def __init__(self, h_dim, n_classes, dropout=0.3):
         super().__init__()
-        self.fc1 = nn.Linear(h_dim * 2, h_dim)
+        # 4 * h_dim: concat + diferencia + producto elemento a elemento
+        self.fc1     = nn.Linear(h_dim * 4, h_dim * 2)
+        self.bn1     = nn.BatchNorm1d(h_dim * 2)
+        self.fc2     = nn.Linear(h_dim * 2, h_dim)
+        self.fc3     = nn.Linear(h_dim, n_classes)
         self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(h_dim, n_classes)
 
     def apply_edges(self, edges):
-        z = torch.cat([edges.src["h"], edges.dst["h"]], dim=1)
-        z = self.dropout(F.relu(self.fc1(z)))
-        return {"score": self.fc2(z).squeeze(-1)}
+        hu, hv = edges.src["h"], edges.dst["h"]
+        # Diferencia y producto capturan la direccionalidad explícitamente
+        z = torch.cat([hu, hv, hu - hv, hu * hv], dim=1)
+        z = self.dropout(F.relu(self.bn1(self.fc1(z))))
+        z = self.dropout(F.relu(self.fc2(z)))
+        return {"score": self.fc3(z)}
 
     def forward(self, g, h):
         with g.local_scope():

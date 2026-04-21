@@ -6,6 +6,10 @@ import random
 import bz2, gzip
 from collections import Counter, defaultdict
 from tqdm import tqdm
+import random
+import torch
+import numpy as np
+from collections import defaultdict, Counter
 
 
 TOR_LABELS_DICT = {'P2P':0, 'C2P': 1,'P2C': 2}
@@ -21,45 +25,89 @@ class GNN:
         self.val_eids = None
         self.test_eids = None
 
-    def load_dataset(self,
-                     data_path: str,
-                     index_graph: int = 0,
-                     caida_path: str | None = None,
-                     force_reload: bool = False,
-                     simplify: bool = False):
-            
-            # 1.- Cargar CSV
-            # --------------------------
-            if self.debug:
-                    print("[LOAD DATASET] Leyendo CSV …")
-            self.dgl_graph = dgl.data.CSVDataset(data_path, force_reload=force_reload)[index_graph]
-            
-            if self.debug:
-                    print(f"[LOAD DATASET] Grafo {self.dgl_graph}")
-            # 2.- Simplificar grafo si se pide
-            # --------------------------
-            if simplify:
-                if self.debug:
-                    print("[LOAD DATASET] Simplificando  …")
-                self.dgl_graph = dgl.to_simple(self.dgl_graph, return_counts=False)
+import pandas as pd
+import torch
+import dgl
 
-            # 3.- Asignar atributo de aristas 'Relationship' como -1 por defecto
-            # --------------------------
-            num_e = self.dgl_graph.num_edges()
-            self.dgl_graph.edata["Relationship"] = torch.full( (num_e,), -1, dtype=torch.int8)
+class GNN:
+    def __init__(self, debug=False):
+        self.debug = debug
+        self.dgl_graph = None
 
-            # 4.- Etiquetar desde archivo CAIDA si se entrega
-            # --------------------------
-            if caida_path is not None:
-                if self.debug:
-                    print(f"[LOAD DATASET] Etiquetando CAIDA → {caida_path}")
-                self._fill_labels_from_caida_stream_fast(caida_path)
-            
-            
-            if self.debug:
-                cnt = Counter(self.dgl_graph.edata["Relationship"].tolist())
-                print(f"[LOAD DATASET] etiquetas 0/1/2/-1 → {cnt}")
-        
+    def load_dataset(self, nodes_csv, edges_csv):
+        # 1. Cargar CSVs
+        # -----------------------------
+        df_n = pd.read_csv(nodes_csv)
+        df_e = pd.read_csv(edges_csv)
+
+        # 2. Crear estructura del grafo
+        # -----------------------------
+        # src_id y dst_id deben coincidir con el índice de las filas de df_n
+        self.dgl_graph = dgl.graph((df_e['src_id'], df_e['dst_id']), num_nodes=len(df_n))
+
+        # 3. Nodos: Extraer features 
+        # -----------------------------
+        # Excluimos IDs y metadatos; el resto son las columnas que procesamos de PeeringDB
+        feat_cols = [c for c in df_n.columns if c not in ['node_id', 'asn', 'country']]
+        self.dgl_graph.ndata['feat'] = torch.tensor(df_n[feat_cols].values, dtype=torch.float32)
+
+        # 4. Aristas: Extraer etiquetas 
+        # -----------------------------
+        if 'relationship' in df_e.columns:
+            # Importante: para clasificación, labels deben ser long (enteros)
+            self.dgl_graph.edata['label'] = torch.tensor(df_e['relationship'].values, dtype=torch.long)
+
+        if self.debug:
+            print(f"Grafo cargado: {self.dgl_graph.num_nodes()} nodos, {self.dgl_graph.num_edges()} aristas")
+            print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
+    
+    def load_dataset_only_cntrality_attr(self, nodes_csv, edges_csv):
+
+        # 1. Cargar CSVs
+        # -----------------------------
+        df_n = pd.read_csv(nodes_csv)
+        df_e = pd.read_csv(edges_csv)
+
+        # 2. Crear estructura del grafo
+        # -----------------------------
+        self.dgl_graph = dgl.graph((df_e['src_id'], df_e['dst_id']), num_nodes=len(df_n))
+
+        # 3. Nodos: solo weight + atributos de centralidad
+        # -----------------------------
+        centrality_cols = [
+            'weight',
+            'PageRank',
+            'degree_centrality',
+            'betweenness_centrality',
+            'eigenvector_centrality',
+        ]
+        feat_cols = [c for c in centrality_cols if c in df_n.columns]
+        if not feat_cols:
+            raise ValueError(
+                f"Ninguna columna de centralidad encontrada en {nodes_csv}. "
+                f"Columnas disponibles: {list(df_n.columns)}"
+            )
+        feat_arr = df_n[feat_cols].values.astype('float32')
+        # Centralidad features tienen escalas muy distintas (PageRank~1e-5, degree~1).
+        # StandardScaler (media=0, std=1) evita que el GNN colapse al entrenar.
+        mean = feat_arr.mean(axis=0)
+        std  = feat_arr.std(axis=0)
+        std[std == 0] = 1.0  # evitar división por cero en columnas constantes
+        feat_arr = (feat_arr - mean) / std
+        self.dgl_graph.ndata['feat'] = torch.tensor(feat_arr, dtype=torch.float32)
+
+        # 4. Aristas: etiquetas de relación
+        # -----------------------------
+        if 'relationship' in df_e.columns:
+            self.dgl_graph.edata['label'] = torch.tensor(
+                df_e['relationship'].values, dtype=torch.long
+            )
+
+        if self.debug:
+            print(f"Grafo cargado: {self.dgl_graph.num_nodes()} nodos, {self.dgl_graph.num_edges()} aristas")
+            print(f"Features usadas ({len(feat_cols)}): {feat_cols}")
+            print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
+    
     def _fill_labels_from_caida_stream_fast(self, caida_file: str):
 
 
@@ -128,80 +176,177 @@ class GNN:
             c = Counter(self.dgl_graph.edata["Relationship"].tolist())
             print(f"[CAIDA] Conteo final de etiquetas 0/1/2/-1 → {c}")
 
+
     def split_edges_classification(self, train_size=0.7, val_size=0.15, seed=0,
-                                return_eids=False, store_eids=True):
+                                    return_eids=False, store_eids=True,
+                                    balance_mode="proportional"):
         """
-        Split no-leak para edge-classification con train/val/test.
+        Divide aristas en train/val/test SIN fuga entre direcciones opuestas,
+        y estratifica por tipo de par para reducir desbalance entre clases.
 
-        • train_size: fracción para entrenamiento (default 0.7 = 70%)
-        • val_size: fracción para validación (default 0.15 = 15%)
-        • test_size = 1 - train_size - val_size (default 0.15 = 15%)
-        • Crea edata['train_mask'], ['val_mask'] y ['test_mask'].
-        • Devuelve (train_eids, val_eids, test_eids) si `return_eids=True`.
-        • Opcionalmente los guarda como atributos (para reutilizarlos).
+        Estratificación usada:
+        - Se agrupan eids por par no dirigido (min(u,v), max(u,v)).
+        - Cada par recibe una firma de etiquetas (p.ej. (0,0), (1,2), (2,), ...).
+        - Se hace split por cada firma preservando proporciones train/val/test.
+
+                Parámetros de balance:
+                - balance_mode="proportional" (default): mantiene proporciones naturales.
+                - balance_mode="strict_equal": submuestrea cada split para igualar
+                    cantidad de aristas por clase (0/1/2) usando el mínimo disponible.
         """
-
-
         rng = random.Random(seed)
-        torch.manual_seed(seed); np.random.seed(seed)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
 
-        u, v  = self.dgl_graph.edges()
-        rel   = self.dgl_graph.edata["Relationship"]
+        if not (0.0 < train_size < 1.0):
+            raise ValueError(f"train_size debe estar entre 0 y 1. Recibido: {train_size}")
+        if not (0.0 <= val_size < 1.0):
+            raise ValueError(f"val_size debe estar entre 0 y 1. Recibido: {val_size}")
+        if train_size + val_size >= 1.0:
+            raise ValueError("train_size + val_size debe ser < 1.0 para dejar espacio a test")
+        if balance_mode not in {"proportional", "strict_equal"}:
+            raise ValueError(
+                f"balance_mode inválido: {balance_mode}. Usa 'proportional' o 'strict_equal'"
+            )
+
+        u, v = self.dgl_graph.edges()
+
+        label_key = next((k for k in ["label", "relationship", "Relationship"] if k in self.dgl_graph.edata), None)
+        if label_key is None:
+            raise KeyError(f"No se encontró etiqueta de arista en edata. Claves disponibles: {list(self.dgl_graph.edata.keys())}")
+
+        rel = self.dgl_graph.edata[label_key].long()
+
+        # Solo aristas con etiqueta válida
         is_lbl = rel >= 0
+        labeled_eids = torch.where(is_lbl)[0].tolist()
 
-        # 1.- Agrupar dos direcciones
-        # --------------------------
+        # 1) Agrupar por par no dirigido (no leakage)
         pair2eids = defaultdict(list)
-        for eid, (ui, vi) in enumerate(zip(u.tolist(), v.tolist())):
-            if is_lbl[eid]:
-                pair2eids[(min(ui, vi), max(ui, vi))].append(eid)
+        for eid in labeled_eids:
+            ui, vi = int(u[eid].item()), int(v[eid].item())
+            pair = (ui, vi) if ui <= vi else (vi, ui)
+            pair2eids[pair].append(eid)
 
-        pairs = list(pair2eids.keys());   rng.shuffle(pairs)
-        
-        # Split train/val/test
-        n_train = int(len(pairs) * train_size)
-        n_val = int(len(pairs) * val_size)
-        
-        train_pairs = pairs[:n_train]
-        val_pairs   = pairs[n_train:n_train + n_val]
-        test_pairs  = pairs[n_train + n_val:]
+        # 2) Estrato por firma de etiquetas del par
+        #    Ejemplos comunes: (0,0), (1,2), (2,), (1,)
+        signature2pairs = defaultdict(list)
+        for pair, eids in pair2eids.items():
+            sig = tuple(sorted(int(rel[eid].item()) for eid in eids))
+            signature2pairs[sig].append(pair)
 
-        gather = lambda subset: [eid for p in subset for eid in pair2eids[p]]
-        train_eids = torch.tensor(gather(train_pairs), dtype=torch.int64)
-        val_eids   = torch.tensor(gather(val_pairs),   dtype=torch.int64)
-        test_eids  = torch.tensor(gather(test_pairs),  dtype=torch.int64)
+        train_pairs, val_pairs, test_pairs = [], [], []
 
-        # 2.- Máscaras booleanas
-        # --------------------------
+        for sig, pairs in signature2pairs.items():
+            rng.shuffle(pairs)
+            n = len(pairs)
+
+            n_train = int(round(n * train_size))
+            n_val = int(round(n * val_size))
+
+            # Ajuste de bordes para no exceder n
+            if n_train > n:
+                n_train = n
+            if n_train + n_val > n:
+                n_val = max(0, n - n_train)
+
+            # Garantizar test cuando haya suficiente cardinalidad
+            if n >= 3 and (n_train + n_val) >= n:
+                if n_val > 0:
+                    n_val -= 1
+                elif n_train > 1:
+                    n_train -= 1
+
+            train_pairs.extend(pairs[:n_train])
+            val_pairs.extend(pairs[n_train:n_train + n_val])
+            test_pairs.extend(pairs[n_train + n_val:])
+
+        # Mezcla global para no dejar bloques por estrato
+        rng.shuffle(train_pairs)
+        rng.shuffle(val_pairs)
+        rng.shuffle(test_pairs)
+
+        def gather_eids(pairs_subset):
+            return [eid for p in pairs_subset for eid in pair2eids[p]]
+
+        train_list = gather_eids(train_pairs)
+        val_list = gather_eids(val_pairs)
+        test_list = gather_eids(test_pairs)
+
+        train_eids = torch.tensor(train_list, dtype=torch.long)
+        val_eids = torch.tensor(val_list, dtype=torch.long)
+        test_eids = torch.tensor(test_list, dtype=torch.long)
+
+        # 3) Balance opcional por clase dentro de cada split
+        # Nota: se hace a nivel de aristas para no mover elementos entre splits.
+        if balance_mode == "strict_equal":
+            classes_present = sorted(set(int(x) for x in rel[labeled_eids].tolist() if int(x) >= 0))
+
+            def downsample_equal(eids_tensor):
+                if eids_tensor.numel() == 0:
+                    return eids_tensor
+
+                by_class = {}
+                for c in classes_present:
+                    mask_c = rel[eids_tensor] == c
+                    cls_eids = eids_tensor[mask_c]
+                    if cls_eids.numel() > 0:
+                        by_class[c] = cls_eids
+
+                # Si falta alguna clase en este split, no forzamos balance para evitar vaciarlo
+                if len(by_class) < max(2, len(classes_present)):
+                    return eids_tensor
+
+                target = min(x.numel() for x in by_class.values())
+                if target <= 0:
+                    return eids_tensor
+
+                selected = []
+                for c in classes_present:
+                    cls_eids = by_class[c]
+                    perm = torch.randperm(cls_eids.numel())
+                    selected.append(cls_eids[perm[:target]])
+
+                out = torch.cat(selected)
+                perm_out = torch.randperm(out.numel())
+                return out[perm_out]
+
+            train_eids = downsample_equal(train_eids)
+            val_eids = downsample_equal(val_eids)
+            test_eids = downsample_equal(test_eids)
+
+        # 4) Crear máscaras booleanas
         num_e = self.dgl_graph.num_edges()
-        train_mask = torch.zeros(num_e, dtype=torch.bool)
-        val_mask   = torch.zeros(num_e, dtype=torch.bool)
-        test_mask  = torch.zeros(num_e, dtype=torch.bool)
-        
-        train_mask[train_eids] = True
-        val_mask[val_eids]     = True
-        test_mask[test_eids]   = True
+        for name, eids in [("train_mask", train_eids), ("val_mask", val_eids), ("test_mask", test_eids)]:
+            mask = torch.zeros(num_e, dtype=torch.bool)
+            if eids.numel() > 0:
+                mask[eids] = True
+            self.dgl_graph.edata[name] = mask
 
-        self.dgl_graph.edata["train_mask"] = train_mask
-        self.dgl_graph.edata["val_mask"]   = val_mask
-        self.dgl_graph.edata["test_mask"]  = test_mask
-
-        # 3.- Opcional: guardo para sampling
-        # --------------------------
+        # 5) Guardado opcional
         if store_eids:
             self.train_eids = train_eids
-            self.val_eids   = val_eids
-            self.test_eids  = test_eids
+            self.val_eids = val_eids
+            self.test_eids = test_eids
 
         if self.debug:
-            print(f"[split] train={train_mask.sum()}  val={val_mask.sum()}  test={test_mask.sum()}")
-            print("  clases train:", dict(Counter(rel[train_mask].tolist())))
-            print("  clases val:",   dict(Counter(rel[val_mask].tolist())))
+            def dist(eids_tensor):
+                if eids_tensor.numel() == 0:
+                    return {}
+                return dict(Counter(rel[eids_tensor].tolist()))
+
+            print("\n[SPLIT COMPLETO - ESTRATIFICADO]")
+            print(f"Modo balanceo: {balance_mode}")
+            print(f"Etiqueta usada: {label_key}")
+            print(f"Total aristas etiquetadas: {len(labeled_eids)}")
+            print(f"Train: {train_eids.shape[0]} | Val: {val_eids.shape[0]} | Test: {test_eids.shape[0]}")
+            print(f"Distribución Train: {dist(train_eids)}")
+            print(f"Distribución Val:   {dist(val_eids)}")
+            print(f"Distribución Test:  {dist(test_eids)}")
 
         if return_eids:
-            return (train_eids, val_eids, test_eids)
-        return None
-
+            return train_eids, val_eids, test_eids
+        
 
     def split_graph_nodes(self, train_size=0.8):
         num_nodes = self.dgl_graph.num_nodes()
