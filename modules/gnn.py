@@ -45,13 +45,19 @@ class GNN:
         # src_id y dst_id deben coincidir con el índice de las filas de df_n
         self.dgl_graph = dgl.graph((df_e['src_id'], df_e['dst_id']), num_nodes=len(df_n))
 
-        # 3. Nodos: Extraer features 
+        # Guardar mapeo asn → node_id para poder usar _fill_labels_from_caida_stream_fast
+        if 'asn' in df_n.columns:
+            self.asn_to_node_id = dict(zip(df_n['asn'].astype(int), df_n['node_id'].astype(int)))
+        else:
+            self.asn_to_node_id = None
+
+        # 3. Nodos: Extraer features
         # -----------------------------
         # Excluimos IDs y metadatos; el resto son las columnas que procesamos de PeeringDB
         feat_cols = [c for c in df_n.columns if c not in ['node_id', 'asn', 'country']]
         self.dgl_graph.ndata['feat'] = torch.tensor(df_n[feat_cols].values, dtype=torch.float32)
 
-        # 4. Aristas: Extraer etiquetas 
+        # 4. Aristas: Extraer etiquetas
         # -----------------------------
         if 'relationship' in df_e.columns:
             # Importante: para clasificación, labels deben ser long (enteros)
@@ -109,72 +115,113 @@ class GNN:
             print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
     
     def _fill_labels_from_caida_stream_fast(self, caida_file: str):
+        """Etiqueta aristas existentes con relaciones CAIDA y agrega las que faltan.
 
+        Para aristas CAIDA que no están en el grafo:
+          - Si ambos nodos ya existen: agrega solo la arista.
+          - Si algún ASN no existe en el grafo: crea el nodo con features=0
+            y luego agrega la arista.
 
-        # 1.- Diccionario rápido: (u, v) -> eid
-        # --------------------------
-        u, v = self.dgl_graph.edges()
-        eid_map = {(int(u[i]), int(v[i])): i           # clave   = (u,v)
-                for i in range(self.dgl_graph.num_edges())}  # valor  = id de arista
+        Requiere que load_dataset() haya guardado self.asn_to_node_id.
+        """
+        if not hasattr(self, 'asn_to_node_id') or self.asn_to_node_id is None:
+            raise RuntimeError(
+                "asn_to_node_id no disponible. "
+                "Llama a load_dataset() con nodes_csv que contenga columna 'asn'."
+            )
 
-        # Buffers para aristas nuevas que no estén en el grafo
+        # Copia mutable del mapeo asn → node_id
+        asn_to_nid = dict(self.asn_to_node_id)
+        next_nid   = self.dgl_graph.num_nodes()
+        feat_dim   = (self.dgl_graph.ndata['feat'].shape[1]
+                      if 'feat' in self.dgl_graph.ndata else 0)
+
+        # 1.- Inicializar labels si no existen (−1 = sin etiquetar)
+        if 'label' not in self.dgl_graph.edata:
+            self.dgl_graph.edata['label'] = torch.full(
+                (self.dgl_graph.num_edges(),), -1, dtype=torch.long
+            )
+
+        # 2.- Diccionario rápido (node_id_u, node_id_v) → eid
+        u_all, v_all = self.dgl_graph.edges()
+        eid_map = {(int(u_all[i]), int(v_all[i])): i
+                   for i in range(self.dgl_graph.num_edges())}
+
+        # Buffers para elementos nuevos
         buffer_src, buffer_dst, buffer_lbl = [], [], []
+        new_node_asns: list[int] = []   # ASNs que necesitan nodo nuevo
 
-        # 2.- Elegir la función open según extensión
-        # --------------------------
+        # 3.- Elegir opener según extensión
         opener = (bz2.open  if caida_file.endswith(".bz2") else
-                gzip.open if caida_file.endswith(".gz")  else
-                open)
+                  gzip.open if caida_file.endswith(".gz")  else
+                  open)
 
-        # 3.- Recorrer el archivo CAIDA
-        # --------------------------
+        # 4.- Recorrer archivo CAIDA
         with opener(caida_file, "rt") as f:
             for line in tqdm(f, desc="Etiquetando CAIDA"):
                 if line.startswith("#") or not line.strip():
-                    continue  # saltar comentarios y líneas vacías
+                    continue
 
-                src, dst, rel = line.strip().split("|")
-                src, dst = int(src), int(dst)
+                src_asn, dst_asn, rel = line.strip().split("|")
+                src_asn, dst_asn = int(src_asn), int(dst_asn)
 
-                # Definir pares y etiquetas según CAIDA
-                if rel == "0":              # P2P  (simétrico)
-                    pares     = [(src, dst), (dst, src)]
-                    etiquetas = [0, 0]      # 0 = P2P
-                else:                       # -1  (P2C / C2P)
-                    pares     = [(src, dst), (dst, src)]
-                    etiquetas = [2, 1]      # 2 = P2C, 1 = C2P
+                if rel == "0":          # P2P simétrico
+                    pares     = [(src_asn, dst_asn), (dst_asn, src_asn)]
+                    etiquetas = [0, 0]
+                else:                   # -1: provider→customer / customer→provider
+                    pares     = [(src_asn, dst_asn), (dst_asn, src_asn)]
+                    etiquetas = [2, 1]  # P2C=2, C2P=1
 
-                # 4.- Procesar cada dirección
-                # --------------------------
-                for (u_nodo, v_nodo), lbl in zip(pares, etiquetas):
-                    eid = eid_map.get((u_nodo, v_nodo))
+                for (u_asn, v_asn), lbl in zip(pares, etiquetas):
+                    # Convertir ASN → node_id, creando nodo nuevo si es necesario
+                    if u_asn not in asn_to_nid:
+                        asn_to_nid[u_asn] = next_nid
+                        new_node_asns.append(u_asn)
+                        next_nid += 1
+                    if v_asn not in asn_to_nid:
+                        asn_to_nid[v_asn] = next_nid
+                        new_node_asns.append(v_asn)
+                        next_nid += 1
+
+                    u_nid = asn_to_nid[u_asn]
+                    v_nid = asn_to_nid[v_asn]
+
+                    eid = eid_map.get((u_nid, v_nid))
                     if eid is not None:
-                        # Arista ya existe → solo etiquetar
-                        self.dgl_graph.edata["Relationship"][eid] = lbl
+                        # Arista ya existe → actualizar etiqueta
+                        self.dgl_graph.edata['label'][eid] = lbl
                     else:
-                        # Arista no existe → guardar para añadirla luego
-                        buffer_src.append(u_nodo)
-                        buffer_dst.append(v_nodo)
+                        # Arista no existe → agregar al buffer
+                        buffer_src.append(u_nid)
+                        buffer_dst.append(v_nid)
                         buffer_lbl.append(lbl)
 
-        # 5.- Añadir aristas nuevas (si hay)
-        # --------------------------
-        if buffer_src:   # lista no vacía
-            self.dgl_graph = dgl.add_edges(
-                self.dgl_graph,
-                torch.tensor(buffer_src),
-                torch.tensor(buffer_dst),
-                data={"Relationship": torch.tensor(buffer_lbl, dtype=torch.int8)}
+        # 5.- Agregar nodos nuevos (ASNs que no estaban en el grafo)
+        if new_node_asns:
+            n_new = len(new_node_asns)
+            new_feat = (torch.zeros(n_new, feat_dim, dtype=torch.float32)
+                        if feat_dim > 0 else None)
+            node_data = {'feat': new_feat} if new_feat is not None else {}
+            self.dgl_graph.add_nodes(n_new, node_data)
+            if self.debug:
+                print(f"[CAIDA] Añadidos {n_new} nodos nuevos (ASNs sin info de PeeringDB → feat=0)")
+
+        # 6.- Agregar aristas nuevas
+        if buffer_src:
+            self.dgl_graph.add_edges(
+                torch.tensor(buffer_src, dtype=torch.long),
+                torch.tensor(buffer_dst, dtype=torch.long),
+                data={'label': torch.tensor(buffer_lbl, dtype=torch.long)}
             )
             if self.debug:
-                print(f"[CAIDA] Añadidas {len(buffer_src)} aristas que faltaban")
+                print(f"[CAIDA] Añadidas {len(buffer_src)} aristas nuevas al grafo")
 
-        # 6.- Resumen final (opcional)
-        # --------------------------
+        # 7.- Actualizar mapeo y resumen
+        self.asn_to_node_id = asn_to_nid
+
         if self.debug:
-            
-            c = Counter(self.dgl_graph.edata["Relationship"].tolist())
-            print(f"[CAIDA] Conteo final de etiquetas 0/1/2/-1 → {c}")
+            c = Counter(self.dgl_graph.edata['label'].tolist())
+            print(f"[CAIDA] Conteo final de etiquetas 0/1/2/−1 → {c}")
 
 
     def split_edges_classification(self, train_size=0.7, val_size=0.15, seed=0,
