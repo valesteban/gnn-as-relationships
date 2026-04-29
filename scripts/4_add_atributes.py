@@ -427,16 +427,24 @@ def add_atributes_edges(edges_csv: str, caida_rel_path: str = None, output_dir: 
 if __name__ == '__main__':
 
     output_dir = "/media/vale/KINGSTON/TESIS/data_2026/"
-    nodes_csv = output_dir + "nodes_rib_20260301_0000_to_20260302_0000.csv"
-    edges_csv = output_dir + "edges_rib_20260301_0000_to_20260302_0000.csv"
+    nodes_csv = output_dir + "nodes_rib_20260301_0000_to_20260302_0000_pruned.csv"
+    edges_csv = output_dir + "edges_rib_20260301_0000_to_20260302_0000_pruned.csv"
+
 
     peeringdb_file = "/media/vale/KINGSTON/TESIS/data_2026/peeringdb_2_dump_2026_03_01.json"
     year = "2026"
     month = "03"
 
     caida_relationships_file = "/media/vale/KINGSTON/TESIS/data_2026/20260301.as-rel.txt.bz2"
-        
+    
+    # output_dir = "/media/vale/KINGSTON/TESIS/data/RIBs/"
+    # nodes_csv = output_dir + "nodes_sanitized_rib_marzo_2024.csv"
+    # edges_csv = output_dir + "edges_sanitized_rib_marzo_2024.csv"
+    # year = "2024"
+    # month = "03"
 
+    caida_relationships_file = "/media/vale/KINGSTON/TESIS/data/CAIDA_AS_Relationships/Serial_1/20240301.as-rel.txt.bz2"
+    peeringdb_file = "/media/vale/KINGSTON/TESIS/data/peeringdb/json/peeringdb_2024_marzo_01.json"
     print("#####################################################")
     print(f"AGREGANDO ATRIBUTOS ")
     print("#####################################################")

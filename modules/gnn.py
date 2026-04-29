@@ -34,16 +34,90 @@ class GNN:
         self.debug = debug
         self.dgl_graph = None
 
-    def load_dataset(self, nodes_csv, edges_csv):
+    def _reverse_relationship_value(self, value):
+        """Invierte la relación para la arista en sentido contrario.
+
+        Convención usada:
+        - 0 (P2P) -> 0
+        - 1 (C2P) -> 2 (P2C)
+        - 2 (P2C) -> 1 (C2P)
+        También soporta valores string equivalentes.
+        """
+        mapping = {
+            0: 0, 1: 2, 2: 1,
+            "0": 0, "1": 2, "2": 1,
+            "P2P": 0,
+            "C2P": 2,
+            "P2C": 1,
+        }
+        return mapping.get(value, value)
+
+    def _make_edges_bidirectional(self, df_e: pd.DataFrame) -> pd.DataFrame:
+        """Devuelve un DataFrame de aristas en ambos sentidos sin duplicados exactos."""
+        required_cols = {"src_id", "dst_id"}
+        if not required_cols.issubset(df_e.columns):
+            missing = required_cols - set(df_e.columns)
+            raise ValueError(f"Faltan columnas requeridas en edges_csv: {missing}")
+
+        df_rev = df_e.copy()
+        df_rev[["src_id", "dst_id"]] = df_rev[["dst_id", "src_id"]]
+
+        # Invertir etiqueta solo para la copia en sentido contrario
+        if "relationship" in df_rev.columns:
+            df_rev["relationship"] = df_rev["relationship"].map(self._reverse_relationship_value)
+
+        df_bi = pd.concat([df_e, df_rev], ignore_index=True)
+        df_bi = df_bi.drop_duplicates(subset=["src_id", "dst_id"], keep="first")
+        df_bi = df_bi.reset_index(drop=True)
+        return df_bi
+
+    def _normalize_relationship_column(self, df_e: pd.DataFrame) -> pd.DataFrame:
+        """Normaliza columna relationship a int (0/1/2 y opcionalmente -1)."""
+        if "relationship" not in df_e.columns:
+            return df_e
+
+        # Estandariza etiquetas string -> numéricas
+        raw = df_e["relationship"]
+        mapped = raw.map(
+            lambda x: {
+                "P2P": 0,
+                "C2P": 1,
+                "P2C": 2,
+                "-1": -1,
+                "0": 0,
+                "1": 1,
+                "2": 2,
+            }.get(x, x)
+        )
+
+        # Fuerza numérico y falla explícitamente si hay valores no válidos
+        numeric = pd.to_numeric(mapped, errors="coerce")
+        if numeric.isna().any():
+            bad = sorted(set(raw[numeric.isna()].astype(str).tolist()))
+            raise ValueError(
+                f"Valores de 'relationship' no reconocidos en edges_csv: {bad}"
+            )
+
+        df_e = df_e.copy()
+        df_e["relationship"] = numeric.astype("int64")
+        return df_e
+
+    def load_dataset(self, nodes_csv, edges_csv, add_reverse_edges=True):
         # 1. Cargar CSVs
         # -----------------------------
         df_n = pd.read_csv(nodes_csv)
         df_e = pd.read_csv(edges_csv)
 
+        if add_reverse_edges:
+            df_e = self._make_edges_bidirectional(df_e)
+        df_e = self._normalize_relationship_column(df_e)
+
         # 2. Crear estructura del grafo
         # -----------------------------
         # src_id y dst_id deben coincidir con el índice de las filas de df_n
-        self.dgl_graph = dgl.graph((df_e['src_id'], df_e['dst_id']), num_nodes=len(df_n))
+        src = df_e['src_id'].to_numpy(dtype='int64')
+        dst = df_e['dst_id'].to_numpy(dtype='int64')
+        self.dgl_graph = dgl.graph((src, dst), num_nodes=len(df_n))
 
         # Guardar mapeo asn → node_id para poder usar _fill_labels_from_caida_stream_fast
         if 'asn' in df_n.columns:
@@ -57,26 +131,39 @@ class GNN:
         feat_cols = [c for c in df_n.columns if c not in ['node_id', 'asn', 'country']]
         self.dgl_graph.ndata['feat'] = torch.tensor(df_n[feat_cols].values, dtype=torch.float32)
 
-        # 4. Aristas: Extraer etiquetas
+        # 4. Aristas: Extraer etiquetas y features
         # -----------------------------
         if 'relationship' in df_e.columns:
             # Importante: para clasificación, labels deben ser long (enteros)
             self.dgl_graph.edata['label'] = torch.tensor(df_e['relationship'].values, dtype=torch.long)
 
+        if 'weight' in df_e.columns:
+            ew = torch.tensor(df_e['weight'].values, dtype=torch.float32)
+            self.dgl_graph.edata['edge_feat'] = ew.unsqueeze(1)  # (E, 1)
+
         if self.debug:
             print(f"Grafo cargado: {self.dgl_graph.num_nodes()} nodos, {self.dgl_graph.num_edges()} aristas")
+            print(f"Aristas en ambos sentidos: {add_reverse_edges}")
             print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
+            if 'edge_feat' in self.dgl_graph.edata:
+                print(f"Edge features: {self.dgl_graph.edata['edge_feat'].shape[1]} dim")
     
-    def load_dataset_only_cntrality_attr(self, nodes_csv, edges_csv):
+    def load_dataset_only_cntrality_attr(self, nodes_csv, edges_csv, add_reverse_edges=True):
 
         # 1. Cargar CSVs
         # -----------------------------
         df_n = pd.read_csv(nodes_csv)
         df_e = pd.read_csv(edges_csv)
 
+        if add_reverse_edges:
+            df_e = self._make_edges_bidirectional(df_e)
+        df_e = self._normalize_relationship_column(df_e)
+
         # 2. Crear estructura del grafo
         # -----------------------------
-        self.dgl_graph = dgl.graph((df_e['src_id'], df_e['dst_id']), num_nodes=len(df_n))
+        src = df_e['src_id'].to_numpy(dtype='int64')
+        dst = df_e['dst_id'].to_numpy(dtype='int64')
+        self.dgl_graph = dgl.graph((src, dst), num_nodes=len(df_n))
 
         # 3. Nodos: solo weight + atributos de centralidad
         # -----------------------------
@@ -102,17 +189,24 @@ class GNN:
         feat_arr = (feat_arr - mean) / std
         self.dgl_graph.ndata['feat'] = torch.tensor(feat_arr, dtype=torch.float32)
 
-        # 4. Aristas: etiquetas de relación
+        # 4. Aristas: etiquetas de relación y features
         # -----------------------------
         if 'relationship' in df_e.columns:
             self.dgl_graph.edata['label'] = torch.tensor(
                 df_e['relationship'].values, dtype=torch.long
             )
 
+        if 'weight' in df_e.columns:
+            ew = torch.tensor(df_e['weight'].values, dtype=torch.float32)
+            self.dgl_graph.edata['edge_feat'] = ew.unsqueeze(1)  # (E, 1)
+
         if self.debug:
             print(f"Grafo cargado: {self.dgl_graph.num_nodes()} nodos, {self.dgl_graph.num_edges()} aristas")
+            print(f"Aristas en ambos sentidos: {add_reverse_edges}")
             print(f"Features usadas ({len(feat_cols)}): {feat_cols}")
             print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
+            if 'edge_feat' in self.dgl_graph.edata:
+                print(f"Edge features: {self.dgl_graph.edata['edge_feat'].shape[1]} dim")
     
     def _fill_labels_from_caida_stream_fast(self, caida_file: str):
         """Etiqueta aristas existentes con relaciones CAIDA y agrega las que faltan.
@@ -133,8 +227,10 @@ class GNN:
         # Copia mutable del mapeo asn → node_id
         asn_to_nid = dict(self.asn_to_node_id)
         next_nid   = self.dgl_graph.num_nodes()
-        feat_dim   = (self.dgl_graph.ndata['feat'].shape[1]
-                      if 'feat' in self.dgl_graph.ndata else 0)
+        feat_dim      = (self.dgl_graph.ndata['feat'].shape[1]
+                         if 'feat' in self.dgl_graph.ndata else 0)
+        edge_feat_dim = (self.dgl_graph.edata['edge_feat'].shape[1]
+                         if 'edge_feat' in self.dgl_graph.edata else 0)
 
         # 1.- Inicializar labels si no existen (−1 = sin etiquetar)
         if 'label' not in self.dgl_graph.edata:
@@ -208,10 +304,14 @@ class GNN:
 
         # 6.- Agregar aristas nuevas
         if buffer_src:
+            n_new_edges = len(buffer_src)
+            edge_data = {'label': torch.tensor(buffer_lbl, dtype=torch.long)}
+            if edge_feat_dim > 0:
+                edge_data['edge_feat'] = torch.zeros(n_new_edges, edge_feat_dim, dtype=torch.float32)
             self.dgl_graph.add_edges(
                 torch.tensor(buffer_src, dtype=torch.long),
                 torch.tensor(buffer_dst, dtype=torch.long),
-                data={'label': torch.tensor(buffer_lbl, dtype=torch.long)}
+                data=edge_data
             )
             if self.debug:
                 print(f"[CAIDA] Añadidas {len(buffer_src)} aristas nuevas al grafo")
@@ -590,4 +690,124 @@ class GNN:
         if self.debug:
             print(f"[add_random_features] feat ← ({n}, {dim})  |  mode={mode}")
 
+    def remove_low_degree_nodes(self, degree: int = 1, iterations: int = 3):
+        """Elimina iterativamente nodos con grado undirected <= degree.
 
+        Como el grafo es bidireccional, el grado undirected se aproxima con
+        in_degree (cada arista no dirigida aparece como una arista entrante).
+        Se repite 'iterations' veces porque al eliminar nodos de grado bajo
+        pueden quedar nuevos nodos que también cumplen la condición.
+
+        Args:
+            degree:     umbral de grado (se eliminan nodos con grado <= degree)
+            iterations: número de pasadas
+        """
+        g = self.dgl_graph
+
+        for i in range(iterations):
+            # in_degree ≈ grado undirected en grafo bidireccional
+            deg = g.in_degrees()
+            nodes_to_remove = torch.where(deg <= degree)[0]
+
+            if nodes_to_remove.numel() == 0:
+                if self.debug:
+                    print(f"[remove_low_degree iter {i+1}] No hay nodos con grado <= {degree}. Terminando.")
+                break
+
+            keep_nodes = torch.where(deg > degree)[0]
+            g = dgl.node_subgraph(g, keep_nodes)
+
+            if self.debug:
+                print(f"[remove_low_degree iter {i+1}] Eliminados {nodes_to_remove.numel()} nodos "
+                      f"(grado <= {degree}) → quedan {g.num_nodes()} nodos, {g.num_edges()} aristas")
+
+        self.dgl_graph = g
+
+        # Actualizar mapeo asn → node_id usando los IDs originales guardados por DGL
+        if hasattr(self, 'asn_to_node_id') and self.asn_to_node_id is not None:
+            original_ids = g.ndata[dgl.NID].tolist()
+            orig_to_new  = {int(orig): new for new, orig in enumerate(original_ids)}
+            self.asn_to_node_id = {
+                asn: orig_to_new[orig_nid]
+                for asn, orig_nid in self.asn_to_node_id.items()
+                if orig_nid in orig_to_new
+            }
+
+        if self.debug:
+            if 'label' in self.dgl_graph.edata:
+                c = Counter(self.dgl_graph.edata['label'].tolist())
+                print(f"[remove_low_degree] Distribución final de etiquetas: {dict(c)}")
+
+    def split_edges_classification_v0(self, train_size=0.7, val_size=0.15, seed=0,
+                                return_eids=False, store_eids=True):
+        """
+        Split no-leak para edge-classification con train/val/test.
+
+        • train_size: fracción para entrenamiento (default 0.7 = 70%)
+        • val_size: fracción para validación (default 0.15 = 15%)
+        • test_size = 1 - train_size - val_size (default 0.15 = 15%)
+        • Crea edata['train_mask'], ['val_mask'] y ['test_mask'].
+        • Devuelve (train_eids, val_eids, test_eids) si `return_eids=True`.
+        • Opcionalmente los guarda como atributos (para reutilizarlos).
+        """
+
+
+        rng = random.Random(seed)
+        torch.manual_seed(seed); np.random.seed(seed)
+
+        u, v  = self.dgl_graph.edges()
+        rel   = self.dgl_graph.edata["Relationship"]
+        is_lbl = rel >= 0
+
+        # 1.- Agrupar dos direcciones
+        # --------------------------
+        pair2eids = defaultdict(list)
+        for eid, (ui, vi) in enumerate(zip(u.tolist(), v.tolist())):
+            if is_lbl[eid]:
+                pair2eids[(min(ui, vi), max(ui, vi))].append(eid)
+
+        pairs = list(pair2eids.keys());   rng.shuffle(pairs)
+        
+        # Split train/val/test
+        n_train = int(len(pairs) * train_size)
+        n_val = int(len(pairs) * val_size)
+        
+        train_pairs = pairs[:n_train]
+        val_pairs   = pairs[n_train:n_train + n_val]
+        test_pairs  = pairs[n_train + n_val:]
+
+        gather = lambda subset: [eid for p in subset for eid in pair2eids[p]]
+        train_eids = torch.tensor(gather(train_pairs), dtype=torch.int64)
+        val_eids   = torch.tensor(gather(val_pairs),   dtype=torch.int64)
+        test_eids  = torch.tensor(gather(test_pairs),  dtype=torch.int64)
+
+        # 2.- Máscaras booleanas
+        # --------------------------
+        num_e = self.dgl_graph.num_edges()
+        train_mask = torch.zeros(num_e, dtype=torch.bool)
+        val_mask   = torch.zeros(num_e, dtype=torch.bool)
+        test_mask  = torch.zeros(num_e, dtype=torch.bool)
+        
+        train_mask[train_eids] = True
+        val_mask[val_eids]     = True
+        test_mask[test_eids]   = True
+
+        self.dgl_graph.edata["train_mask"] = train_mask
+        self.dgl_graph.edata["val_mask"]   = val_mask
+        self.dgl_graph.edata["test_mask"]  = test_mask
+
+        # 3.- Opcional: guardo para sampling
+        # --------------------------
+        if store_eids:
+            self.train_eids = train_eids
+            self.val_eids   = val_eids
+            self.test_eids  = test_eids
+
+        if self.debug:
+            print(f"[split] train={train_mask.sum()}  val={val_mask.sum()}  test={test_mask.sum()}")
+            print("  clases train:", dict(Counter(rel[train_mask].tolist())))
+            print("  clases val:",   dict(Counter(rel[val_mask].tolist())))
+
+        if return_eids:
+            return (train_eids, val_eids, test_eids)
+        return None

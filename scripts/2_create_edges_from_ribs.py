@@ -32,6 +32,29 @@ src_id | dst_id | src_asn | |dst_asn,weight
 
 
 
+def prune_leaves(dict_edges: dict, dict_nodes: dict, iterations: int = 3):
+    """Elimina iterativamente nodos hoja (grado no-dirigido == 1)."""
+    edges = dict(dict_edges)
+    nodes = dict(dict_nodes)
+
+    for _ in range(iterations):
+        neighbors = defaultdict(set)
+        for src, dst in edges:
+            neighbors[src].add(dst)
+            neighbors[dst].add(src)
+
+        leaves = {asn for asn in nodes if len(neighbors.get(asn, set())) <= 1}
+        if not leaves:
+            break
+
+        for asn in leaves:
+            nodes.pop(asn, None)
+        edges = {(s, d): w for (s, d), w in edges.items()
+                 if s not in leaves and d not in leaves}
+
+    return edges, nodes
+
+
 def create_graph_edges(rib_file: str, data_path: str):
     # Generar nombre de salida: edges_rib_20240701.csv
     edges_filename = f"edges_{rib_file.split('.')[0]}.csv"
@@ -90,6 +113,31 @@ def create_graph_edges(rib_file: str, data_path: str):
                 f_edges.write(f"{src_id},{dst_id},{src_asn},{dst_asn},{weight}\n")
                 
         print(f"Archivo de aristas creado: {data_path + edges_filename}")
+
+        # Guardar versión podada (sin hojas, 3 iteraciones)
+        # -----------------------
+        pruned_edges, pruned_nodes = prune_leaves(dict_edges, dict_nodes, iterations=3)
+        pruned_edges_filename = f"edges_{rib_file.split('.')[0]}_pruned.csv"
+        pruned_nodes_filename = f"nodes_{rib_file.split('.')[0]}_pruned.csv"
+
+        sorted_pruned_asns = sorted(pruned_nodes.keys())
+        pruned_asn_to_id = {asn: i for i, asn in enumerate(sorted_pruned_asns)}
+
+        with open(data_path + pruned_nodes_filename, "w") as f_nodes:
+            f_nodes.write("node_id,asn,weight\n")
+            for asn, weight in pruned_nodes.items():
+                f_nodes.write(f"{pruned_asn_to_id[asn]},{asn},{weight}\n")
+
+        with open(data_path + pruned_edges_filename, "w") as f_edges:
+            f_edges.write("src_id,dst_id,src_asn,dst_asn,weight\n")
+            for (src_asn, dst_asn), weight in pruned_edges.items():
+                src_id = pruned_asn_to_id[src_asn]
+                dst_id = pruned_asn_to_id[dst_asn]
+                f_edges.write(f"{src_id},{dst_id},{src_asn},{dst_asn},{weight}\n")
+
+        print(f"Grafo podado: {len(pruned_nodes)} nodos, {len(pruned_edges)} aristas")
+        print(f"  -> {data_path + pruned_nodes_filename}")
+        print(f"  -> {data_path + pruned_edges_filename}")
         return edges_filename
 if __name__ == '__main__':
 
@@ -103,10 +151,14 @@ if __name__ == '__main__':
                        "rib_20260301_0000_to_20260301_1200.txt",
                         "rib_20260301_0000_to_20260302_0000.txt"]
     
+    # list_ribs_files = ["sanitized_rib_marzo_2024.txt"]
+    
+    
     for rib_file in list_ribs_files:
         print("#####################################################")
         print(f"CREANDO ARCHIVO edges para {rib_file}")
         print("#####################################################")
 
-        
-        create_graph_edges(rib_file, data_path = "/media/vale/KINGSTON/TESIS/data_2026/")
+        data_path = "/media/vale/KINGSTON/TESIS/data_2026/"
+        # data_path = "/media/vale/KINGSTON/TESIS/data/RIBs/"
+        create_graph_edges(rib_file, data_path = data_path)
