@@ -167,7 +167,7 @@ if __name__ == "__main__":
     print("FILTER COUNTRY TOPOLOGY")
     print("#######################")
 
-    data_path = "/media/vale/KINGSTON/TESIS/data_2026/"
+    data_path = "/media/vale/KINGSTON/as-level-internet-graph/grafos/"
     output_dir = data_path
 
     lacnic_file = str(Path(data_path) / "delegated-lacnic-extended-latest")

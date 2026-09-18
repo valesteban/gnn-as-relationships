@@ -102,5 +102,5 @@ if __name__ == '__main__':
         print(f"Duration : {duration}")
         print("#####################################################")
         
-        ribs_download(start, duration, data_path = "/media/vale/KINGSTON/TESIS/data_2026/")
+        ribs_download(start, duration, data_path = "/media/vale/KINGSTON/as-level-internet-graph/grafos/")
 
