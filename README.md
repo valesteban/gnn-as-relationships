@@ -1,9 +1,11 @@
 # gnn-as-relationships
 
-Inferencia del tipo de relación entre Sistemas Autónomos de Internet (**P2P / C2P / P2C**) con Graph Neural Networks sobre el grafo AS-level construido desde RIBs BGP, enriquecido con PeeringDB y etiquetado con CAIDA AS-Relationships.
+Inferencia del tipo de relación entre Sistemas Autónomos de Internet (**P2P / C2P / P2C**) con Graph Neural Networks (PyTorch Geometric) sobre el grafo AS-level construido desde RIBs BGP, enriquecido con PeeringDB y etiquetado con CAIDA AS-Relationships.
 
-Stack: Python 3.10 · PyTorch 2.3 · **DGL 1.1.3** · NetworkX · pandas · scikit-learn · gensim (BGP2Vec) · pybgpstream.
+Stack: Python 3.10 · PyTorch 2.3 · **PyTorch Geometric 2.8** · NetworkX · pandas · scikit-learn · gensim (BGP2Vec) · pybgpstream.
 
+> La versión original con DGL 1.1.3 está en la rama `main` y el tag `v1.0-dgl`.
+>
 > Documentación técnica completa (arquitectura, pipeline, decisiones de diseño, deuda técnica): **[DOCUMENTATION.md](DOCUMENTATION.md)**.
 
 ## Ubicación de los datos
@@ -34,7 +36,7 @@ Una copia del grafo del 1 de marzo de 2026 (24 h de RIBs) ya enriquecida está i
 ## Estructura
 
 ```
-modules/gnn.py             Clase GNN: CSV → DGLGraph, etiquetado CAIDA, splits sin fuga, poda
+modules/gnn.py             Clase GNN: CSV → torch_geometric.data.Data, etiquetado CAIDA, splits sin fuga, poda
 modules/gnn_models.py      Encoders GCN / GraphSAGE / GAT (2 y 3 capas, variantes con muestreo) y decoders MLP / Bilinear / DotProduct
 modules/bgp2vec.py         BGP2Vec (Word2Vec sobre AS_PATHs) con lectura en streaming
 modules/graph.py           Pipeline legado multi-snapshot (no usado por los notebooks)
@@ -51,13 +53,14 @@ notebooks/                 Análisis del grafo, de las RIBs, de atributos y visu
 ```bash
 python3.10 -m venv env310 && source env310/bin/activate
 pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121
-pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html
+pip install torch_geometric
+pip install pyg_lib torch_scatter torch_sparse torch_cluster -f https://data.pyg.org/whl/torch-2.3.0+cu121.html
 pip install pandas numpy networkx scikit-learn scipy matplotlib seaborn tqdm gensim==4.4.0 requests pyyaml umap-learn jupyter ipykernel
 pip install pybgpstream==2.0.4      # solo para el paso 1; requiere libbgpstream instalada
 python -m ipykernel install --user --name env310
 ```
 
-(Para CPU use los índices `whl/cpu` y `wheels/torch-2.3/repo.html`.)
+(Para CPU use los índices `whl/cpu` y `torch-2.3.0+cpu.html`.)
 
 ## Pipeline de datos
 

@@ -1,7 +1,7 @@
 # Documentación técnica — `gnn-as-relationships`
 
-> Inferencia del tipo de relación entre Sistemas Autónomos (AS) de Internet con Graph Neural Networks (DGL + PyTorch).
-> Documento generado a partir de una lectura completa del código en su estado actual (rama `main`, commit `73b1051`). Todas las rutas, nombres de funciones, hiperparámetros y cifras citadas provienen del código o de los outputs guardados en los notebooks.
+> Inferencia del tipo de relación entre Sistemas Autónomos (AS) de Internet con Graph Neural Networks (PyTorch Geometric + PyTorch).
+> Documento generado a partir de una lectura completa del código. Esta versión corresponde a la rama `migracion-pyg` (código sobre **PyTorch Geometric**); la versión original sobre DGL 1.1.3 se conserva en `main` / tag `v1.0-dgl`. Todas las rutas, nombres de funciones, hiperparámetros y cifras citadas provienen del código o de los outputs guardados en los notebooks.
 
 ---
 
@@ -44,14 +44,15 @@ Se exploran dos familias de experimentos, cada una en su notebook:
 
 ### 1.2 Enfoque basado en GNN y representación de las relaciones
 
-**Grafo.** El grafo es un `dgl.DGLGraph` dirigido y homogéneo:
+**Grafo.** El grafo es un `torch_geometric.data.Data` dirigido y homogéneo:
 
 * **Nodos** = AS, indexados por `node_id` (entero contiguo 0..N-1) con un mapeo `asn ↔ node_id` guardado en el CSV de nodos.
 * **Aristas** = adyacencias observadas en AS_PATHs. Cada enlace no dirigido se materializa como **dos aristas dirigidas** `(u→v)` y `(v→u)`. Esto es esencial porque la etiqueta es *direccional*: si `(u→v)` es C2P (`1`), entonces `(v→u)` es P2C (`2`); P2P (`0`) es simétrica. La regla de inversión `{0:0, 1:2, 2:1}` está implementada en `GNN._reverse_relationship_value` (`modules/gnn.py:37`) y en `add_atributes_edges` (`scripts/4_add_atributes.py:355-413`).
-* `ndata['feat']`: matriz de atributos de nodo (72 columnas en el dataset actual, ver §3.2).
-* `edata['label']`: etiqueta `0/1/2/-1` (`torch.long`).
-* `edata['edge_feat']`: peso normalizado de la arista (frecuencia con la que el par aparece en los AS_PATH), forma `(E, 1)`.
-* `edata['train_mask' | 'val_mask' | 'test_mask']`: máscaras booleanas de split.
+* `data.x`: matriz de atributos de nodo (72 columnas en el dataset actual, ver §3.2).
+* `data.edge_index`: aristas dirigidas `(2, E)`.
+* `data.edge_label`: etiqueta `0/1/2/-1` (`torch.long`).
+* `data.edge_attr`: peso normalizado de la arista (frecuencia con la que el par aparece en los AS_PATH), forma `(E, 1)`.
+* `data.train_mask | val_mask | test_mask`: máscaras booleanas de split (tamaño E); `data.node_train_mask | node_test_mask` para el split de nodos.
 
 **Modelo.** Se sigue el patrón *encoder–decoder* para aristas:
 
@@ -64,13 +65,13 @@ El *message passing* del encoder agrega información de la vecindad de cada AS (
 
 ### 1.3 Stack tecnológico
 
-Versiones verificadas en los outputs guardados de los notebooks (`DGL: 1.1.3 | PyTorch: 2.3.0+cu121`) y en el entorno de la máquina de desarrollo:
+Versiones verificadas en el entorno `env310` de la máquina de desarrollo (la versión DGL original corría con `DGL 1.1.3 | PyTorch 2.3.0+cu121`):
 
 | Componente | Versión / detalle | Uso |
 |---|---|---|
 | Python | 3.10.12 (kernel Jupyter `env310`) | Todo |
 | PyTorch | 2.3.0 (+cu121) | Modelos, entrenamiento |
-| **DGL** (Deep Graph Library) | **1.1.3** (wheel `torch-2.3/cu121`) | `dgl.graph`, `GraphConv`, `SAGEConv`, `GATConv`, `NeighborSampler`, `ClusterGCNSampler`, `DeepWalk` |
+| **PyTorch Geometric** | **2.8.0** (+ `pyg_lib`, `torch_scatter`, `torch_sparse`, `torch_cluster`) | `Data`, `GCNConv`, `SAGEConv`, `GATConv`, `LinkNeighborLoader`, `ClusterData`/`ClusterLoader`, `Node2Vec` |
 | NetworkX | (sin fijar) | Centralidades en `scripts/4_add_atributes.py`; pipeline legado `modules/graph.py` |
 | pandas / numpy | 2.3.3 / 2.2.6 | I/O CSV, normalización |
 | scikit-learn | 1.7.2 | Métricas (F1, matriz de confusión, ROC-AUC), `train_test_split`, `compute_class_weight` |
@@ -80,7 +81,7 @@ Versiones verificadas en los outputs guardados de los notebooks (`DGL: 1.1.3 | P
 | PyYAML | 5.4.1 | Solo `modules/graph.py` (legado) |
 | tqdm, matplotlib, seaborn, umap-learn, scipy | — | Progreso y visualización en notebooks |
 
-> **No se usa PyTorch Geometric.** Toda la parte de grafos está construida sobre DGL. No existe `requirements.txt` ni `environment.yml`; en §4.1 se propone uno.
+> **Ya no se usa DGL.** Toda la parte de grafos está construida sobre PyG. No existe `requirements.txt` ni `environment.yml`; en §4.1 se propone uno.
 
 ---
 
@@ -88,7 +89,7 @@ Versiones verificadas en los outputs guardados de los notebooks (`DGL: 1.1.3 | P
 
 ```
 gnn-as-relationships/
-├── README.md                                   # 3 líneas, desactualizado (cita 3_export_to_dgl_graph.py, inexistente)
+├── README.md                                   # Descripción, ubicación de datos, instalación y pipeline
 ├── DOCUMENTATION.md                            # este documento
 ├── .gitignore                                  # ignora *.csv, *.md, *.json, *.txt, data/*, results/* (ver §5)
 │
@@ -96,7 +97,7 @@ gnn-as-relationships/
 ├── AS_relationship_inference_por_partes.ipynb  # ★ Enfoque en dos etapas: embeddings + clasificador ANN
 │
 ├── modules/                                    # Código reutilizable importado por los notebooks
-│   ├── gnn.py            # ★ Clase GNN: carga CSV→DGLGraph, etiquetado CAIDA, splits, features aleatorias, poda
+│   ├── gnn.py            # ★ Clase GNN: carga CSV→Data (PyG), etiquetado CAIDA, splits, features aleatorias, poda
 │   ├── gnn_models.py     # ★ Encoders GCN/GraphSAGE/GAT (2L, 3L, *Sample2L) y decoders MLP/Bilinear/DotProduct
 │   ├── graph.py          # Pipeline LEGADO: clase Graph (NetworkX) → dataset multi-grafo mensual (meta.yaml, graphs.csv)
 │   ├── bgp2vec.py        # RIBCorpus (streaming de AS_PATHs) + BGP2VEC (Word2Vec skip-gram sobre rutas)
@@ -161,23 +162,23 @@ gnn-as-relationships/
 
 | Clase | Entrada | Cálculo | Salida | Simetría |
 |---|---|---|---|---|
-| `MLPPredictor(h_dim, n_classes, edge_dim=1, drop=0.3)` | `h_u`, `h_v`, opcional `edata['edge_feat']` | `z = [h_u ‖ h_v ‖ w_uv]` → `Linear(2h+edge_dim, h)` → ReLU → Dropout → `Linear(h, C)` | `(E, C)` (o `(E,)` si `C=1`) | Asimétrico (orden de concatenación) |
+| `MLPPredictor(h_dim, n_classes, edge_dim=1, drop=0.3)` | `h_u`, `h_v`, opcional `edge_attr` | `z = [h_u ‖ h_v ‖ w_uv]` → `Linear(2h+edge_dim, h)` → ReLU → Dropout → `Linear(h, C)` | `(E, C)` (o `(E,)` si `C=1`) | Asimétrico (orden de concatenación) |
 | `BilinearPredictor(h_dim, n_cls)` | `h_u`, `h_v` | `score_c = h_uᵀ W_c h_v + b_c`, con `W ∈ R^{C×F×F}` inicializado `randn` (`torch.einsum("ef,cfk,ek->ec")`) | `(E, C)` | Asimétrico (W_c no es simétrica) |
-| `DotProductPredictor()` | `h_u`, `h_v` | `fn.u_dot_v` | `(E,)` | Simétrico → solo link prediction |
+| `DotProductPredictor()` | `h_u`, `h_v` | `(h_u * h_v).sum(-1)` | `(E,)` | Simétrico → solo link prediction |
 
-Los tres usan `g.local_scope()` + `g.apply_edges(...)` (idioma DGL), por lo que funcionan tanto sobre el grafo completo como sobre `pair_graph`s de un sampler.
+Los tres reciben `edge_index` `(2, E)` y los embeddings `h` `(N, F)` e indexan `h[edge_index[0]]`, `h[edge_index[1]]`, por lo que funcionan tanto sobre el grafo completo como sobre `edge_label_index` de un `LinkNeighborLoader` o el `edge_index` de un cluster.
 
-> Nota: `MLPPredictor` solo concatena `edge_feat` si la clave existe en `edges.data`; si el modelo se construyó con `edge_dim=1` y el grafo no tiene `edge_feat`, la dimensión de entrada de `fc1` no coincidirá.
+> Nota: `MLPPredictor` solo concatena `edge_attr` si se le pasa (`edge_attr is not None`); si el modelo se construyó con `edge_dim=1` y el grafo no tiene `edge_feat`, la dimensión de entrada de `fc1` no coincidirá.
 
 #### 3.1.2 Encoders full-batch (3 capas y 2 capas)
 
-Todas las clases exponen la misma interfaz: `encode(g, x)`, `decodeMLP(g, h)`, `decodeBilinear(g, h)`, `decodeDotProduct(g, h)` y `forward(g, x)` (= `encode` + `regressor: Linear(out, 1)`, usado para regresión nodal en el enfoque por partes).
+Todas las clases exponen la misma interfaz: `encode(x, edge_index)`, `decodeMLP(edge_index, h, edge_attr=None)`, `decodeBilinear(edge_index, h)`, `decodeDotProduct(edge_index, h)` y `forward(x, edge_index)` (= `encode` + `regressor: Linear(out, 1)`, usado para regresión nodal en el enfoque por partes).
 
-| Clase | Capas DGL | Agregación / atención | Activación entre capas | Self-loops | Dim. de salida del embedding |
+| Clase | Capas PyG | Agregación / atención | Activación entre capas | Self-loops | Dim. de salida del embedding |
 |---|---|---|---|---|---|
-| `GCN3L(in, hid, out, out_feats_mlp=1, drop=0.3, edge_dim=0)` | `GraphConv×3` | Normalización simétrica de GCN | ReLU + Dropout (no tras la última) | `dgl.add_self_loop(g)` en cada `encode` | `out` |
-| `GraphSAGE3L(...)` | `SAGEConv×3` (`'mean'`) | Media de vecinos + proyección propia | ReLU + Dropout | No (SAGE no requiere) | `out` |
-| `GAT3L(..., num_heads=4)` | `GATConv×3` | Atención multi-cabeza; `flatten(1)` concatena cabezas tras cada capa | ReLU + Dropout | `add_self_loop` | `out × num_heads` |
+| `GCN3L(in, hid, out, out_feats_mlp=1, drop=0.3, edge_dim=0)` | `GCNConv×3` | Normalización simétrica de GCN | ReLU + Dropout (no tras la última) | `add_self_loops=True` (por defecto en `GCNConv`) | `out` |
+| `GraphSAGE3L(...)` | `SAGEConv×3` (`aggr='mean'`) | Media de vecinos + proyección propia | ReLU + Dropout | No (SAGE no requiere) | `out` |
+| `GAT3L(..., num_heads=4)` | `GATConv×3` | Atención multi-cabeza; `concat=True` concatena cabezas tras cada capa | ReLU + Dropout | `add_self_loops=True` (por defecto) | `out × num_heads` |
 | `GCN2L`, `GraphSAGE2L`, `GAT2L` | Igual con 2 capas | Igual | Igual | Igual | `out` (GAT: `out×heads`) |
 
 Detalles relevantes:
@@ -188,19 +189,15 @@ Detalles relevantes:
 
 #### 3.1.3 Encoders con muestreo (`GCNSampler2L`, `GraphSAGESample2L`, `GATSample2L`)
 
-Diseñados para entrenamiento mini-batch. `encode(g_or_blocks, x)` distingue dos casos:
+Diseñados para entrenamiento mini-batch. En PyG tanto `LinkNeighborLoader` (neighbor sampling) como `ClusterLoader` (ClusterGCN) entregan un `Batch` con `x` y `edge_index` locales, por lo que `encode(x, edge_index)` es idéntico al de los encoders full-batch:
 
 ```python
-if isinstance(g_or_blocks, list):        # NeighborSampler → lista de Blocks (MFGs)
-    h = relu(conv1(blocks[0], x)); h = conv2(blocks[1], h)
-else:                                    # ClusterGCN → subgrafo denso, o grafo completo
-    h = relu(conv1(g, x));         h = conv2(g, h)
+h = relu(conv1(x, edge_index)); h = conv2(h, edge_index)
 ```
 
-* `GraphConv`/`GATConv` se crean con `allow_zero_in_degree=True` porque en los blocks/subgrafos muestreados hay nodos sin vecinos de entrada.
-* No hay dropout ni self-loops en estas variantes.
+* No hay dropout en estas variantes; `GCNConv`/`GATConv` agregan self-loops por defecto, lo que también cubre los nodos sin vecinos de entrada de los subgrafos muestreados (el `allow_zero_in_degree` de DGL ya no es necesario).
 * Solo exponen `decodeMLP`; `MLPPredictor` se crea con `edge_dim=1` por defecto.
-* En `GATSample2L` **no** se hace `flatten(1)` entre `conv1` y `conv2` (sí al final), a diferencia de `GAT2L/GAT3L`.
+* En `GATSample2L` las cabezas quedan concatenadas tras cada capa (`concat=True`): `conv2` recibe `hidden × heads` y el `MLPPredictor` `out × heads`.
 
 ### 3.2 Pipeline de procesamiento de datos
 
@@ -222,10 +219,10 @@ else:                                    # ClusterGCN → subgrafo denso, o graf
  nodes_rib_*_enriched_tesis.csv (node_id,asn,+72 feats)   edges_rib_*_enriched_tesis.csv (…,weight,relationship)
           │  modules/gnn.py :: GNN.load_dataset()
           ▼
- dgl.DGLGraph  ndata['feat'] (N×72) · edata['label'] (E) · edata['edge_feat'] (E×1)
+ torch_geometric.data.Data  x (N×72) · edge_index (2×E) · edge_label (E) · edge_attr (E×1)
           │  GNN.split_edges_classification()  /  split_edges_link_prediction()  /  split_graph_nodes()
           ▼
- edata['train_mask'|'val_mask'|'test_mask']  (+ gnn.train_eids / val_eids / test_eids)
+ data.train_mask | val_mask | test_mask  (+ gnn.train_eids / val_eids / test_eids)
           │  notebooks (training loop)
           ▼
  métricas · matrices de confusión · embeddings (.pt) · pesos (.pth)
@@ -271,21 +268,21 @@ Se eliminan las columnas nuevas con varianza cero. Resultado en el dataset actua
 
 Distribución de `relationship` en `data/edges_*.csv`: `0`: 340 512 · `1`: 159 963 · `2`: 159 963 · `-1`: 73 943 (≈10 % sin etiqueta).
 
-#### 3.2.5 Carga a DGL (`modules/gnn.py :: GNN`)
+#### 3.2.5 Carga a PyG (`modules/gnn.py :: GNN`)
 
 `load_dataset(nodes_csv, edges_csv, add_reverse_edges=True)`:
 
 1. `_make_edges_bidirectional`: concatena el DataFrame con su copia invertida (etiqueta invertida con `_reverse_relationship_value`) y `drop_duplicates(['src_id','dst_id'], keep='first')` → la fila original prevalece. Con el dataset actual pasa de 734 381 a **807 496 aristas** (79 504 nodos).
 2. `_normalize_relationship_column`: acepta `'P2P'/'C2P'/'P2C'` o `'0'/'1'/'2'/'-1'`, fuerza `int64` y lanza `ValueError` ante valores desconocidos.
-3. `dgl.graph((src, dst), num_nodes=len(df_n))` — asume que `src_id/dst_id` son índices de fila de `df_n`.
-4. `ndata['feat']` = todas las columnas excepto `node_id, asn, country` (`float32`); `edata['label']` (`long`); `edata['edge_feat']` = `weight` `(E,1)`.
+3. `Data(edge_index=torch.stack([src, dst]), num_nodes=len(df_n))` — asume que `src_id/dst_id` son índices de fila de `df_n`.
+4. `x` = todas las columnas excepto `node_id, asn, country` (`float32`); `edge_label` (`long`); `edge_attr` = `weight` `(E,1)`.
 5. Guarda `self.asn_to_node_id` para `_fill_labels_from_caida_stream_fast`.
 
 `load_dataset_only_cntrality_attr(...)`: igual pero `feat` = `[weight, PageRank, degree_centrality, betweenness_centrality, eigenvector_centrality]` **estandarizadas con z-score** (media 0, desviación 1; columnas constantes → std=1). Comentario en el código: sin esto la GNN colapsa por las escalas dispares.
 
 `_fill_labels_from_caida_stream_fast(caida_file)`: alternativa in-memory al paso 4 de scripts: recorre el `.bz2/.gz/.txt` de CAIDA, etiqueta aristas existentes (`eid_map` dict `(u,v)→eid`), agrega aristas faltantes y crea nodos nuevos con `feat = 0` para ASNs ausentes.
 
-Otras utilidades: `add_random_features(dim, std, seed, mode∈{zscore,minmax,uniform})` (control experimental), `remove_low_degree_nodes(degree, iterations)` (poda con `dgl.node_subgraph` y remapeo de `asn_to_node_id` vía `dgl.NID`).
+Otras utilidades: `add_random_features(dim, std, seed, mode∈{zscore,minmax,uniform})` (control experimental), `remove_low_degree_nodes(degree, iterations)` (poda con `torch_geometric.utils.subgraph` y remapeo de `asn_to_node_id` con los ids originales conservados).
 
 #### 3.2.6 Estrategias de split
 
@@ -353,10 +350,10 @@ Resultados registrados en los outputs del notebook (test):
 |---|---|---|---|---|
 | 0 | Link prediction con features PeeringDB (`split_edges_link_prediction(0.8)`) | `GCN3L`, `GraphSAGE3L`, `GAT3L` | `BCEWithLogits(pos ∪ neg)`; AUC; umbral óptimo por distancia a (0,1) en ROC | `embeddings_ribs_{DotProduct\|MLP}_{modelo}_mis_attr_marzo.pt`, `model_emb_*.pth`, `roc_*.png` |
 | 1 | Link prediction con features de grado | idem | idem | `…_grado_attr_febrero.pt` |
-| 2 | Link prediction sobre grafo externo `InternetGNNData2022/caida/caida.bin` (`dgl.load_graphs`) | idem | idem | `…_2022_attr.pt` |
+| 2 | Link prediction sobre grafo externo `InternetGNNData2022/caida/caida_pyg.pt` (`torch.load`; el `caida.bin` original es binario DGL y debe convertirse una vez) | idem | idem | `…_2022_attr.pt` |
 | 3 | Regresión de **out-degree** (`log1p + minmax`) con `split_graph_nodes(0.8)` + 20 % de train como val | `forward()` (regressor) | `nn.L1Loss` (MAE), `r2_score` | `embeddings_ribs_{modelo}_out_degree.pt` |
-| 4 | Regresión de **PageRank** calculado con `update_all` en DGL (`DAMP=0.85, K=20`), `log1p + minmax` | idem | MAE | `embeddings_ribs_{modelo}_pagerank_norm.pt` |
-| 5.1 | `dgl.nn.DeepWalk(g, emb_dim=32, walk_length=40, window_size=1)`, `SparseAdam(lr=0.01)`, 50 épocas, batch 128 | — | Pérdida propia de DeepWalk | `embeddings_deepWalk_marzo_2026.pt` |
+| 4 | Regresión de **PageRank** calculado con message passing explícito (`index_add_` sobre `edge_index`, `DAMP=0.85, K=20`), `log1p + minmax` | idem | MAE | `embeddings_ribs_{modelo}_pagerank_norm.pt` |
+| 5.1 | `torch_geometric.nn.Node2Vec(edge_index, embedding_dim=32, walk_length=40, context_size=2, p=q=1, num_negative_samples=5)` (DeepWalk), `SparseAdam(lr=0.01)`, 50 épocas, batch 128 | — | Pérdida propia de Node2Vec | `embeddings_deepWalk_marzo_2026.pt` |
 | 5.2 | `BGP2VEC` (Word2Vec skip-gram, `vector_size=32, window=2, negative=5, min_count=1`) sobre `RIBCorpus` (hasta 5 M rutas del RIB de 12 h) | — | — | `bgp2vec.word2vec` |
 
 **Etapa B — clasificador de aristas** (`EdgeClassifierANN`):
@@ -379,7 +376,7 @@ Resultados registrados en los outputs del notebook (test):
 | Normalización `log1p + minmax` en todo atributo numérico | `4_add_atributes.py` | Grados, centralidades y prefijos siguen distribuciones de cola pesada (power-law); `log1p` comprime la cola y `minmax` lleva todo a `[0,1]` para convivir con los one-hot. Se valida con `_check_range` y en `validar_normalizacion_atributos.ipynb`. |
 | z-score para features de centralidad | `load_dataset_only_cntrality_attr` | Escalas muy distintas (PageRank ~1e-5 vs grado ~1) hacían colapsar el entrenamiento (comentario en el código). |
 | `add_self_loop` en GCN/GAT, no en SAGE | `encode()` | `GraphConv`/`GATConv` fallan con nodos de in-degree 0 y se benefician de incluir la propia representación; `SAGEConv` ya concatena la proyección del nodo. |
-| `allow_zero_in_degree=True` en variantes Sampler | `*Sample2L` | Los MFGs y clusters muestreados contienen nodos sin vecinos de entrada. |
+| Self-loops por defecto en `GCNConv`/`GATConv` | Todos los encoders | Cubren los nodos sin vecinos de entrada de los subgrafos muestreados (equivale al `allow_zero_in_degree` de DGL). |
 | Decoder Bilinear con `W ∈ R^{C×F×F}` | `BilinearPredictor` | Modela explícitamente la interacción `h_uᵀ W_c h_v` por clase; asimetría natural para C2P/P2C. Es más costoso (`C·F²` parámetros: 3·128² ≈ 49 k) que el MLP. |
 | `edge_feat` (peso) en el MLP decoder | `MLPPredictor(edge_dim=1)` | La frecuencia de un par en los AS_PATH correlaciona con la relación (proveedores aparecen más); se inyecta al decoder porque los encoders DGL usados no consumen features de arista. |
 | Features aleatorias (Caso 4) | `add_random_features` | Control experimental: mide cuánto aporta la estructura del grafo por sí sola frente a los atributos (GraphSAGE alcanza 85 % solo con estructura). |
@@ -415,9 +412,10 @@ pip install --upgrade pip
 # 2. PyTorch 2.3.0 (CUDA 12.1). Para CPU: --index-url https://download.pytorch.org/whl/cpu
 pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121
 
-# 3. DGL compatible con torch 2.3 / cu121 (el proyecto se ejecutó con DGL 1.1.3)
-pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html
-#    (CPU: pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/repo.html)
+# 3. PyTorch Geometric + extensiones (LinkNeighborLoader, ClusterData/METIS y Node2Vec las necesitan)
+pip install torch_geometric
+pip install pyg_lib torch_scatter torch_sparse torch_cluster -f https://data.pyg.org/whl/torch-2.3.0+cu121.html
+#    (CPU: -f https://data.pyg.org/whl/torch-2.3.0+cpu.html)
 
 # 4. Resto de dependencias
 pip install "pandas>=2.0" "numpy<3" networkx scikit-learn scipy matplotlib seaborn tqdm \
@@ -434,7 +432,11 @@ python -m ipykernel install --user --name env310 --display-name env310
 
 ```
 torch==2.3.0
-dgl==1.1.3
+torch_geometric==2.8.0
+pyg_lib
+torch_scatter
+torch_sparse
+torch_cluster
 pandas==2.3.3
 numpy==2.2.6
 networkx
@@ -565,26 +567,26 @@ from modules.gnn_models import GraphSAGE3L
 
 gnn = GNN(debug=False)
 gnn.load_dataset("data/nodes_rib_…_enriched_tesis.csv", "data/edges_rib_…_enriched_tesis.csv")
-g = gnn.dgl_graph
-in_feats = g.ndata["feat"].shape[1]                 # 72
+g = gnn.graph
+in_feats = g.x.shape[1]                             # 72
 
 model = GraphSAGE3L(in_feats, 256, 128, out_feats_mlp=3, edge_dim=1, drop=0.3)
 model.load_state_dict(torch.load("ruta/al/modelo.pth", map_location="cpu"))
 model.eval()
 
 with torch.no_grad():
-    h = model.encode(g, g.ndata["feat"])            # embeddings (N, 128)
-    logits = model.decodeMLP(g, h)                  # (E, 3)
+    h = model.encode(g.x, g.edge_index)             # embeddings (N, 128)
+    logits = model.decodeMLP(g.edge_index, h, g.edge_attr)   # (E, 3)
     pred = logits.argmax(1)                         # 0=P2P, 1=C2P, 2=P2C
 
 # Traducir a ASNs
 id_to_asn = {int(r["node_id"]): int(r["asn"]) for r in csv.DictReader(open("data/nodes_rib_…_enriched_tesis.csv"))}
-u, v = g.edges()
+u, v = g.edge_index
 for eid in range(5):
     print(id_to_asn[int(u[eid])], "->", id_to_asn[int(v[eid])], ["P2P","C2P","P2C"][int(pred[eid])])
 ```
 
-Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactamente las que el modelo puede inferir sin etiqueta de referencia. Para pares de AS **no** presentes en el grafo, use el enfoque por partes (`build_edge_features` + `EdgeClassifierANN`) o `_fill_labels_from_caida_stream_fast`-style para agregar nodos con `feat=0`.
+Las aristas con `edge_label == -1` (≈74 k en el CSV, ~10 %) son exactamente las que el modelo puede inferir sin etiqueta de referencia. Para pares de AS **no** presentes en el grafo, use el enfoque por partes (`build_edge_features` + `EdgeClassifierANN`) o `_fill_labels_from_caida_stream_fast`-style para agregar nodos con `feat=0`.
 
 ### 4.6 Artefactos generados
 
@@ -611,7 +613,7 @@ Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactament
 | 3 | `modules/gnn.py:547` | En link prediction se eliminan las aristas de test de `train_g`, pero como el grafo es bidireccional **la arista inversa de cada positivo de test sigue en `train_g`** (y probablemente en `train_pos_g`). | Fuga de información: los AUC de los Casos 0–2 del enfoque por partes están sobreestimados. |
 | 4 | `modules/gnn_models.py:200-206, 233-239, 267-273` | `GCN2L`, `GraphSAGE2L` y `GAT2L` definen `forward()` usando `self.regressor`, que **no existe** en las clases 2L. | `AttributeError` al usar modelos 2L para regresión nodal. |
 | 5 | `modules/gnn_models.py:248` | `GAT2L.Bilinear = BilinearPredictor(out_feats, …)` mientras el embedding tiene `out_feats × num_heads` dims. | `decodeBilinear` falla por tamaño en GAT2L (afecta la celda de comparación). |
-| 6 | `modules/gnn_models.py:346-356` | `GATSample2L` no aplana las cabezas entre `conv1` y `conv2` (sí lo hacen `GAT2L/3L`). | Comportamiento distinto al documentado para GAT; revisar dimensiones efectivas. |
+| 6 | `modules/gnn_models.py` (`GATSample2L`) | *(Corregido en la migración)* La versión DGL no aplanaba las cabezas entre `conv1` y `conv2` y el `MLPPredictor` recibía una dimensión inconsistente. | En PyG `conv2` y el MLP usan `hidden×heads` / `out×heads`. |
 | 7 | `modules/graph.py:371-380` | En `label_edges_caida`, tras asignar `label = 2` para `(src→dst)`, la comprobación `label == -1` para `(dst→src)` ya es falsa. | **Ambas direcciones quedan P2C**; el commit "Corregir etiquetas P2C/C2P invertidas" no lo resolvió. (Pipeline legado.) |
 | 8 | `modules/graph.py:430-471` | `only_degree_features_nodes` contiene código muerto tras `f.close()` que escribe en el archivo cerrado. | `ValueError: I/O operation on closed file`. |
 | 9 | `modules/graph.py:190` | `create_graph_from_caida` ignora `filename_out` y concatena `self.data_path + "edges.csv"` sin `os.path.join`. | Ruta incorrecta si `data_path` no termina en `/`. |
@@ -622,7 +624,7 @@ Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactament
 | 14 | `modules/bgp2vec/bgp2vec.py:50` | `total_examples=len(self.routes)` falla con iteradores (`RIBCorpus`, `islice`). | Copia obsoleta; debe eliminarse. |
 | 15 | `.gitignore` | Ignora `*.md`, `*.csv`, `*.json`, `*.txt`, `*.png`; `README.md` y `data/*.csv` fueron añadidos a la fuerza. | Cualquier documentación o dato nuevo queda invisible para git (este archivo requiere la excepción `!DOCUMENTATION.md`). |
 | 16 | `src/__pycache__/utils.py`, `**/__pycache__/*.pyc`, `src/graph_builder.py` | Fuente dentro de `__pycache__`, bytecode versionado, módulo vacío. | Ruido en el repo; riesgo de importar la versión equivocada de `utils`. |
-| 17 | `README.md` | Cita `3_export_to_dgl_graph.py` (no existe) y omite `4_add_atributes.py`. | Onboarding incorrecto. |
+| 17 | `README.md` | *(Corregido)* Citaba `3_export_to_dgl_graph.py` (no existe) y omitía `4_add_atributes.py`. | Onboarding incorrecto hasta la corrección. |
 
 **Problemas metodológicos**
 
@@ -637,7 +639,7 @@ Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactament
 
 * Lógica de entrenamiento duplicada ~8 veces entre celdas (solo cambian decoder/pérdida); `_train_one` de la celda 43 ya es el esqueleto correcto para factorizarla.
 * Seis clases de encoder casi idénticas; ausencia de tipado en `modules/`, docstrings parciales y mezcla español/inglés.
-* Configuración por edición de código; salidas por `print`; sin semilla global unificada (`dgl.random.seed` solo en link prediction; `torch.backends.cudnn.deterministic` nunca se fija).
+* Configuración por edición de código; salidas por `print`; sin semilla global unificada (`torch_geometric.seed_everything` solo en link prediction; `torch.backends.cudnn.deterministic` nunca se fija).
 * Cero tests automatizados.
 
 ### 5.2 Oportunidades de optimización
@@ -652,7 +654,7 @@ Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactament
 
 **Grafos a gran escala y memoria**
 
-* Para RIBs completos (varios colectores, IPv6) el grafo puede superar 100 k nodos y varios millones de aristas: convertir los datos a `dgl.data.CSVDataset` o guardar con `dgl.save_graphs` para evitar re-parsear CSV (hoy `load_dataset` reconstruye el grafo en cada notebook).
+* Para RIBs completos (varios colectores, IPv6) el grafo puede superar 100 k nodos y varios millones de aristas: guardar el `Data` con `torch.save` (o un `InMemoryDataset` de PyG) para evitar re-parsear CSV (hoy `load_dataset` reconstruye el grafo en cada notebook).
 * En `1_ribs_extraction.py`, reemplazar el `set` de AS_PATHs completos por hashing (`hash(path)`) o por deduplicación posterior con `sort -u`, y escribir con buffer.
 * `NeighborSampler`: usar `num_workers > 0`, `use_uva=True` con GPU, y `fanouts` asimétricos (`[10, 25]`); igualar el presupuesto de épocas al full-batch antes de comparar.
 * ClusterGCN: reducir `batch_size` de clusters (p. ej. 20–50 de 1000) para obtener verdadero mini-batching y ruido de gradiente.
@@ -670,7 +672,7 @@ Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactament
 3. **Configuración declarativa**: `argparse` en los scripts (`--data-path`, `--rib`, `--year`, `--month`, `--caida`, `--country`) y un `config.yaml`/Hydra para hiperparámetros; eliminar rutas absolutas y usar `pathlib`.
 4. **Tipado estático** (`mypy --strict` progresivo) y `ruff`/`black` con `pre-commit`; añadir `from __future__ import annotations` donde se usa `int | None`.
 5. **Logging** (`logging` con niveles y `RichHandler`/archivo) en lugar de `print`; registrar métricas por época en CSV/TensorBoard o MLflow y persistir `GLOBAL_CONFIG` junto a cada modelo.
-6. **Reproducibilidad**: función `set_seed(seed)` que fije `random`, `numpy`, `torch`, `torch.cuda`, `dgl.random` y `cudnn.deterministic`; guardar los `eids` de cada split a disco.
+6. **Reproducibilidad**: función `set_seed(seed)` que fije `random`, `numpy`, `torch`, `torch.cuda`, `torch_geometric.seed_everything` y `cudnn.deterministic`; guardar los `eids` de cada split a disco.
 7. **Estructura de paquete**: `pyproject.toml` con `packages = ["modules", "src"]`, `requirements.txt` fijado, borrar `__pycache__` del índice (`git rm -r --cached '**/__pycache__'`), eliminar `src/graph_builder.py` y `modules/bgp2vec/`, o moverlos a `legacy/`.
 8. **Refactor de modelos**: una clase `GNNEncoder(conv_type, num_layers, ...)` que construya la pila con `nn.ModuleList`, más decoders independientes; `BilinearPredictor` con inicialización `xavier_uniform_` escalada.
 9. **Documentar el protocolo de evaluación** (transductivo, balanceo, semilla, épocas) en el README y en los reportes de resultados.
@@ -682,7 +684,7 @@ Las aristas con `edata['label'] == -1` (≈74 k en el CSV, ~10 %) son exactament
 * **GNN dirigidas** (Dir-GNN, MagNet) o grafo heterogéneo con dos tipos de arista (`observed`, `reverse`) para modelar explícitamente la asimetría en lugar de duplicar aristas.
 * **Semi-supervisión / pseudo-etiquetado** con las ~74 k aristas `-1`: el modelo ya las predice; usar predicciones de alta confianza como etiquetas adicionales y validar con AS-Rank/ProbLink/TopoScope.
 * **Evaluación estratificada**: por tier (transit-free vs stub), por región (Chile/LATAM vs global), por grado del par y por cobertura de PeeringDB (`peeringdb_coverage_bias.ipynb` ya identifica el sesgo).
-* **Dimensión temporal**: `modules/graph.py` fue pensado para 12 snapshots mensuales; reactivar esa idea con un `DGL` `batch` por mes o con GNN temporales (EvolveGCN, TGN) para detectar cambios de relación.
+* **Dimensión temporal**: `modules/graph.py` fue pensado para 12 snapshots mensuales; reactivar esa idea con un `Batch` de PyG por mes o con GNN temporales (EvolveGCN, TGN) para detectar cambios de relación.
 * **Combinar embeddings**: concatenar embeddings estructurales (DeepWalk/BGP2Vec) con los de la GNN, o usarlos como `feat` inicial en lugar de PeeringDB para nodos sin cobertura.
 * **Calibración y explicabilidad**: temperatura sobre los logits, `GNNExplainer` para identificar qué vecinos/atributos determinan una predicción C2P.
 * **Baselines clásicos**: Gao, AS-Rank, ProbLink y un `XGBoost` sobre features de par (`[x_u ‖ x_v ‖ grado, peso]`) para cuantificar la ganancia real de la GNN.
