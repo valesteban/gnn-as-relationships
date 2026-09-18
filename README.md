@@ -4,7 +4,7 @@ Inferencia del tipo de relación entre Sistemas Autónomos de Internet (**P2P / 
 
 Stack: Python 3.10 · PyTorch 2.3 · **PyTorch Geometric 2.8** · NetworkX · pandas · scikit-learn · gensim (BGP2Vec) · pybgpstream.
 
-> La versión original con DGL 1.1.3 está en la rama `main` y el tag `v1.0-dgl`.
+> **Versión nueva con PyTorch Geometric** (rama `migracion-pyg`). La versión original con DGL 1.1.3 está en la rama principal `main`, congelada en el tag `v1.0-dgl`.
 >
 > Documentación técnica completa (arquitectura, pipeline, decisiones de diseño, deuda técnica): **[DOCUMENTATION.md](DOCUMENTATION.md)**.
 

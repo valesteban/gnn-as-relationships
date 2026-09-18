@@ -5,6 +5,15 @@
 
 ---
 
+## Versiones del código
+
+| Versión | Dónde | Librería de grafos |
+|---|---|---|
+| **Nueva (este documento)** | rama `migracion-pyg` | **PyTorch Geometric 2.8** |
+| Original | rama principal `main`, congelada en el **tag `v1.0-dgl`** (commit `4aff18d`) | DGL 1.1.3 |
+
+La migración reemplazó únicamente las llamadas a DGL por sus equivalentes en PyG: la organización del repositorio, las clases, los métodos, la lógica de carga y de splits, las pérdidas y los hiperparámetros son los mismos (los splits con igual semilla producen exactamente los mismos tamaños). Para volver a la versión DGL: `git switch main` o `git checkout v1.0-dgl`. Para comparar: `git diff v1.0-dgl migracion-pyg -- modules/`.
+
 ## Índice
 
 1. [Visión General y Propósito del Proyecto](#1-visión-general-y-propósito-del-proyecto)
