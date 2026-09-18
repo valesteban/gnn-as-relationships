@@ -1,4 +1,3 @@
-import dgl
 import torch
 import numpy as np
 from collections import defaultdict
@@ -11,14 +10,18 @@ import torch
 import numpy as np
 from collections import defaultdict, Counter
 
+import torch_geometric
+from torch_geometric.data import Data
+from torch_geometric.utils import degree as pyg_degree, subgraph
+
 
 TOR_LABELS_DICT = {'P2P':0, 'C2P': 1,'P2C': 2}
 
 class GNN:
     def __init__(self, debug=False):
         self.debug = debug
-        self.dgl_graph = None
-        
+        self.graph = None
+
         # Atributos opcionales para almacenar edge IDs después de split
         # (se asignan en split_edges_classification si store_eids=True)
         self.train_eids = None
@@ -27,12 +30,40 @@ class GNN:
 
 import pandas as pd
 import torch
-import dgl
+
+
+def _edge_ids(edge_index: torch.Tensor, num_nodes: int, u: torch.Tensor, v: torch.Tensor):
+    """Devuelve, para cada par (u[i], v[i]), el id de la arista u->v o -1 si no existe.
+
+    Reemplaza a `g.has_edges_between` / `g.edge_ids` de DGL. Si hay aristas
+    duplicadas se devuelve la primera aparición.
+    """
+    key_all = edge_index[0].long() * num_nodes + edge_index[1].long()
+    order = torch.argsort(key_all, stable=True)
+    key_sorted = key_all[order]
+    key_q = u.long() * num_nodes + v.long()
+    pos = torch.searchsorted(key_sorted, key_q)
+    pos_c = pos.clamp(max=key_sorted.numel() - 1)
+    found = (pos < key_sorted.numel()) & (key_sorted[pos_c] == key_q)
+    eids = torch.full_like(key_q, -1)
+    eids[found] = order[pos_c[found]]
+    return eids
+
+
+def _edge_keys(data: Data):
+    """Nombres de los atributos de arista de un Data (equivale a g.edata.keys())."""
+    return [k for k in data.keys() if k != 'edge_index' and data.is_edge_attr(k)]
+
+
+def _node_keys(data: Data):
+    """Nombres de los atributos de nodo de un Data (equivale a g.ndata.keys())."""
+    return [k for k in data.keys() if data.is_node_attr(k)]
+
 
 class GNN:
     def __init__(self, debug=False):
         self.debug = debug
-        self.dgl_graph = None
+        self.graph = None
 
     def _reverse_relationship_value(self, value):
         """Invierte la relación para la arista en sentido contrario.
@@ -115,9 +146,9 @@ class GNN:
         # 2. Crear estructura del grafo
         # -----------------------------
         # src_id y dst_id deben coincidir con el índice de las filas de df_n
-        src = df_e['src_id'].to_numpy(dtype='int64')
-        dst = df_e['dst_id'].to_numpy(dtype='int64')
-        self.dgl_graph = dgl.graph((src, dst), num_nodes=len(df_n))
+        src = torch.as_tensor(df_e['src_id'].to_numpy(dtype='int64'))
+        dst = torch.as_tensor(df_e['dst_id'].to_numpy(dtype='int64'))
+        self.graph = Data(edge_index=torch.stack([src, dst]), num_nodes=len(df_n))
 
         # Guardar mapeo asn → node_id para poder usar _fill_labels_from_caida_stream_fast
         if 'asn' in df_n.columns:
@@ -129,25 +160,25 @@ class GNN:
         # -----------------------------
         # Excluimos IDs y metadatos; el resto son las columnas que procesamos de PeeringDB
         feat_cols = [c for c in df_n.columns if c not in ['node_id', 'asn', 'country']]
-        self.dgl_graph.ndata['feat'] = torch.tensor(df_n[feat_cols].values, dtype=torch.float32)
+        self.graph.x = torch.tensor(df_n[feat_cols].values, dtype=torch.float32)
 
         # 4. Aristas: Extraer etiquetas y features
         # -----------------------------
         if 'relationship' in df_e.columns:
             # Importante: para clasificación, labels deben ser long (enteros)
-            self.dgl_graph.edata['label'] = torch.tensor(df_e['relationship'].values, dtype=torch.long)
+            self.graph.edge_label = torch.tensor(df_e['relationship'].values, dtype=torch.long)
 
         if 'weight' in df_e.columns:
             ew = torch.tensor(df_e['weight'].values, dtype=torch.float32)
-            self.dgl_graph.edata['edge_feat'] = ew.unsqueeze(1)  # (E, 1)
+            self.graph.edge_attr = ew.unsqueeze(1)  # (E, 1)
 
         if self.debug:
-            print(f"Grafo cargado: {self.dgl_graph.num_nodes()} nodos, {self.dgl_graph.num_edges()} aristas")
+            print(f"Grafo cargado: {self.graph.num_nodes} nodos, {self.graph.num_edges} aristas")
             print(f"Aristas en ambos sentidos: {add_reverse_edges}")
-            print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
-            if 'edge_feat' in self.dgl_graph.edata:
-                print(f"Edge features: {self.dgl_graph.edata['edge_feat'].shape[1]} dim")
-    
+            print(f"Dimensión de entrada (in_feats): {self.graph.x.shape[1]}")
+            if hasattr(self.graph, 'edge_attr') and self.graph.edge_attr is not None:
+                print(f"Edge features: {self.graph.edge_attr.shape[1]} dim")
+
     def load_dataset_only_cntrality_attr(self, nodes_csv, edges_csv, add_reverse_edges=True):
 
         # 1. Cargar CSVs
@@ -161,9 +192,9 @@ class GNN:
 
         # 2. Crear estructura del grafo
         # -----------------------------
-        src = df_e['src_id'].to_numpy(dtype='int64')
-        dst = df_e['dst_id'].to_numpy(dtype='int64')
-        self.dgl_graph = dgl.graph((src, dst), num_nodes=len(df_n))
+        src = torch.as_tensor(df_e['src_id'].to_numpy(dtype='int64'))
+        dst = torch.as_tensor(df_e['dst_id'].to_numpy(dtype='int64'))
+        self.graph = Data(edge_index=torch.stack([src, dst]), num_nodes=len(df_n))
 
         # 3. Nodos: solo weight + atributos de centralidad
         # -----------------------------
@@ -187,27 +218,27 @@ class GNN:
         std  = feat_arr.std(axis=0)
         std[std == 0] = 1.0  # evitar división por cero en columnas constantes
         feat_arr = (feat_arr - mean) / std
-        self.dgl_graph.ndata['feat'] = torch.tensor(feat_arr, dtype=torch.float32)
+        self.graph.x = torch.tensor(feat_arr, dtype=torch.float32)
 
         # 4. Aristas: etiquetas de relación y features
         # -----------------------------
         if 'relationship' in df_e.columns:
-            self.dgl_graph.edata['label'] = torch.tensor(
+            self.graph.edge_label = torch.tensor(
                 df_e['relationship'].values, dtype=torch.long
             )
 
         if 'weight' in df_e.columns:
             ew = torch.tensor(df_e['weight'].values, dtype=torch.float32)
-            self.dgl_graph.edata['edge_feat'] = ew.unsqueeze(1)  # (E, 1)
+            self.graph.edge_attr = ew.unsqueeze(1)  # (E, 1)
 
         if self.debug:
-            print(f"Grafo cargado: {self.dgl_graph.num_nodes()} nodos, {self.dgl_graph.num_edges()} aristas")
+            print(f"Grafo cargado: {self.graph.num_nodes} nodos, {self.graph.num_edges} aristas")
             print(f"Aristas en ambos sentidos: {add_reverse_edges}")
             print(f"Features usadas ({len(feat_cols)}): {feat_cols}")
-            print(f"Dimensión de entrada (in_feats): {self.dgl_graph.ndata['feat'].shape[1]}")
-            if 'edge_feat' in self.dgl_graph.edata:
-                print(f"Edge features: {self.dgl_graph.edata['edge_feat'].shape[1]} dim")
-    
+            print(f"Dimensión de entrada (in_feats): {self.graph.x.shape[1]}")
+            if hasattr(self.graph, 'edge_attr') and self.graph.edge_attr is not None:
+                print(f"Edge features: {self.graph.edge_attr.shape[1]} dim")
+
     def _fill_labels_from_caida_stream_fast(self, caida_file: str):
         """Etiqueta aristas existentes con relaciones CAIDA y agrega las que faltan.
 
@@ -224,24 +255,26 @@ class GNN:
                 "Llama a load_dataset() con nodes_csv que contenga columna 'asn'."
             )
 
+        g = self.graph
+
         # Copia mutable del mapeo asn → node_id
         asn_to_nid = dict(self.asn_to_node_id)
-        next_nid   = self.dgl_graph.num_nodes()
-        feat_dim      = (self.dgl_graph.ndata['feat'].shape[1]
-                         if 'feat' in self.dgl_graph.ndata else 0)
-        edge_feat_dim = (self.dgl_graph.edata['edge_feat'].shape[1]
-                         if 'edge_feat' in self.dgl_graph.edata else 0)
+        next_nid   = g.num_nodes
+        feat_dim      = (g.x.shape[1]
+                         if getattr(g, 'x', None) is not None else 0)
+        edge_feat_dim = (g.edge_attr.shape[1]
+                         if getattr(g, 'edge_attr', None) is not None else 0)
 
         # 1.- Inicializar labels si no existen (−1 = sin etiquetar)
-        if 'label' not in self.dgl_graph.edata:
-            self.dgl_graph.edata['label'] = torch.full(
-                (self.dgl_graph.num_edges(),), -1, dtype=torch.long
+        if getattr(g, 'edge_label', None) is None:
+            g.edge_label = torch.full(
+                (g.num_edges,), -1, dtype=torch.long
             )
 
         # 2.- Diccionario rápido (node_id_u, node_id_v) → eid
-        u_all, v_all = self.dgl_graph.edges()
-        eid_map = {(int(u_all[i]), int(v_all[i])): i
-                   for i in range(self.dgl_graph.num_edges())}
+        u_all, v_all = g.edge_index[0].tolist(), g.edge_index[1].tolist()
+        eid_map = {(u_all[i], v_all[i]): i
+                   for i in range(g.num_edges)}
 
         # Buffers para elementos nuevos
         buffer_src, buffer_dst, buffer_lbl = [], [], []
@@ -285,7 +318,7 @@ class GNN:
                     eid = eid_map.get((u_nid, v_nid))
                     if eid is not None:
                         # Arista ya existe → actualizar etiqueta
-                        self.dgl_graph.edata['label'][eid] = lbl
+                        g.edge_label[eid] = lbl
                     else:
                         # Arista no existe → agregar al buffer
                         buffer_src.append(u_nid)
@@ -295,24 +328,23 @@ class GNN:
         # 5.- Agregar nodos nuevos (ASNs que no estaban en el grafo)
         if new_node_asns:
             n_new = len(new_node_asns)
-            new_feat = (torch.zeros(n_new, feat_dim, dtype=torch.float32)
-                        if feat_dim > 0 else None)
-            node_data = {'feat': new_feat} if new_feat is not None else {}
-            self.dgl_graph.add_nodes(n_new, node_data)
+            if feat_dim > 0:
+                new_feat = torch.zeros(n_new, feat_dim, dtype=torch.float32)
+                g.x = torch.cat([g.x, new_feat], dim=0)
+            g.num_nodes = g.num_nodes + n_new
             if self.debug:
                 print(f"[CAIDA] Añadidos {n_new} nodos nuevos (ASNs sin info de PeeringDB → feat=0)")
 
         # 6.- Agregar aristas nuevas
         if buffer_src:
             n_new_edges = len(buffer_src)
-            edge_data = {'label': torch.tensor(buffer_lbl, dtype=torch.long)}
+            new_ei = torch.stack([torch.tensor(buffer_src, dtype=torch.long),
+                                  torch.tensor(buffer_dst, dtype=torch.long)])
+            g.edge_index = torch.cat([g.edge_index, new_ei], dim=1)
+            g.edge_label = torch.cat([g.edge_label, torch.tensor(buffer_lbl, dtype=torch.long)])
             if edge_feat_dim > 0:
-                edge_data['edge_feat'] = torch.zeros(n_new_edges, edge_feat_dim, dtype=torch.float32)
-            self.dgl_graph.add_edges(
-                torch.tensor(buffer_src, dtype=torch.long),
-                torch.tensor(buffer_dst, dtype=torch.long),
-                data=edge_data
-            )
+                g.edge_attr = torch.cat(
+                    [g.edge_attr, torch.zeros(n_new_edges, edge_feat_dim, dtype=torch.float32)], dim=0)
             if self.debug:
                 print(f"[CAIDA] Añadidas {len(buffer_src)} aristas nuevas al grafo")
 
@@ -320,7 +352,7 @@ class GNN:
         self.asn_to_node_id = asn_to_nid
 
         if self.debug:
-            c = Counter(self.dgl_graph.edata['label'].tolist())
+            c = Counter(g.edge_label.tolist())
             print(f"[CAIDA] Conteo final de etiquetas 0/1/2/−1 → {c}")
 
 
@@ -356,13 +388,14 @@ class GNN:
                 f"balance_mode inválido: {balance_mode}. Usa 'proportional' o 'strict_equal'"
             )
 
-        u, v = self.dgl_graph.edges()
+        u, v = self.graph.edge_index[0], self.graph.edge_index[1]
 
-        label_key = next((k for k in ["label", "relationship", "Relationship"] if k in self.dgl_graph.edata), None)
+        label_key = next((k for k in ["edge_label", "label", "relationship", "Relationship"]
+                          if getattr(self.graph, k, None) is not None), None)
         if label_key is None:
-            raise KeyError(f"No se encontró etiqueta de arista en edata. Claves disponibles: {list(self.dgl_graph.edata.keys())}")
+            raise KeyError(f"No se encontró etiqueta de arista en el grafo. Claves disponibles: {_edge_keys(self.graph)}")
 
-        rel = self.dgl_graph.edata[label_key].long()
+        rel = getattr(self.graph, label_key).long()
 
         # Solo aristas con etiqueta válida
         is_lbl = rel >= 0
@@ -463,12 +496,12 @@ class GNN:
             test_eids = downsample_equal(test_eids)
 
         # 4) Crear máscaras booleanas
-        num_e = self.dgl_graph.num_edges()
+        num_e = self.graph.num_edges
         for name, eids in [("train_mask", train_eids), ("val_mask", val_eids), ("test_mask", test_eids)]:
             mask = torch.zeros(num_e, dtype=torch.bool)
             if eids.numel() > 0:
                 mask[eids] = True
-            self.dgl_graph.edata[name] = mask
+            setattr(self.graph, name, mask)
 
         # 5) Guardado opcional
         if store_eids:
@@ -493,10 +526,10 @@ class GNN:
 
         if return_eids:
             return train_eids, val_eids, test_eids
-        
+
 
     def split_graph_nodes(self, train_size=0.8):
-        num_nodes = self.dgl_graph.num_nodes()
+        num_nodes = self.graph.num_nodes
 
         # Índices aleatorios de nodos
         node_ids = torch.randperm(num_nodes)
@@ -510,24 +543,24 @@ class GNN:
         train_mask[node_ids[:num_train]] = True
         test_mask[node_ids[num_train:]] = True
 
-        # Guardar en el grafo
-        self.dgl_graph.ndata['train_mask'] = train_mask
-        self.dgl_graph.ndata['test_mask'] = test_mask
+        # Guardar en el grafo (prefijo node_ para distinguirlas de las máscaras de arista)
+        self.graph.node_train_mask = train_mask
+        self.graph.node_test_mask = test_mask
 
         if self.debug:
             print(f"Train nodes: {train_mask.sum().item()}, Test nodes: {test_mask.sum().item()}")
 
 
     def split_edges_link_prediction(self, train_ratio: float = 0.8, seed: int = 42):
-        
+
         np.random.seed(seed)
         random.seed(seed)
         torch.manual_seed(seed)
-        dgl.random.seed(seed)  # asegura consistencia en operaciones internas de DGL
-        
-        g = self.dgl_graph
-        num_edges  = g.num_edges()
-        num_nodes  = g.num_nodes()
+        torch_geometric.seed_everything(seed)  # asegura consistencia en operaciones internas de PyG
+
+        g = self.graph
+        num_edges  = g.num_edges
+        num_nodes  = g.num_nodes
         if num_edges == 0:
             raise ValueError("El grafo no contiene aristas.")
 
@@ -544,23 +577,27 @@ class GNN:
         # 2.- Grafo para el encoder (sin aristas de test)
         # --------------------------
         # IMPORTANTE:  mantenemos todas las aristas menos las POSITIVAS de test
-        self.train_g = dgl.remove_edges(g, test_eids)
+        keep = torch.ones(num_edges, dtype=torch.bool)
+        keep[test_eids] = False
+        self.train_g = Data(edge_index=g.edge_index[:, keep], num_nodes=num_nodes)
+        for k in _edge_keys(g):
+            setattr(self.train_g, k, getattr(g, k)[keep])
 
         # 3.- Subgrafos POSITIVOS
         # --------------------------
-        self.train_pos_g = dgl.edge_subgraph(g, train_eids, relabel_nodes=False)
-        self.test_pos_g  = dgl.edge_subgraph(g, test_eids,  relabel_nodes=False)
+        self.train_pos_g = Data(edge_index=g.edge_index[:, train_eids], num_nodes=num_nodes)
+        self.test_pos_g  = Data(edge_index=g.edge_index[:, test_eids],  num_nodes=num_nodes)
 
         # Copiamos feats (si existen) a los subgrafos positivos
-        if "feat" in g.ndata:
-            for gg in (self.train_pos_g, self.test_pos_g):
-                gg.ndata["feat"] = g.ndata["feat"]
+        if getattr(g, "x", None) is not None:
+            for gg in (self.train_g, self.train_pos_g, self.test_pos_g):
+                gg.x = g.x
 
         # Copiamos etiquetas (si existen) a POS
-        if "Relationship" in g.edata:
-            rel = g.edata["Relationship"]
-            self.train_pos_g.edata["Relationship"] = rel[train_eids]
-            self.test_pos_g.edata["Relationship"]  = rel[test_eids]
+        if getattr(g, "Relationship", None) is not None:
+            rel = g.Relationship
+            self.train_pos_g.Relationship = rel[train_eids]
+            self.test_pos_g.Relationship  = rel[test_eids]
 
         # 4.- Subgrafos NEGATIVOS (muestreo uniforme)
         # --------------------------
@@ -573,7 +610,7 @@ class GNN:
                 need   = k - len(collected_u)
                 cand_u = torch.randint(0, num_nodes, (need * 2,))
                 cand_v = torch.randint(0, num_nodes, (need * 2,))
-                mask   = ~g.has_edges_between(cand_u, cand_v)
+                mask   = _edge_ids(g.edge_index, num_nodes, cand_u, cand_v) < 0
                 cand_u, cand_v = cand_u[mask], cand_v[mask]
                 collected_u.extend(cand_u[:need].tolist())
                 collected_v.extend(cand_v[:need].tolist())
@@ -583,21 +620,21 @@ class GNN:
         train_neg_u, train_neg_v = sample_negative(len(train_eids))
         test_neg_u,  test_neg_v  = sample_negative(len(test_eids))
 
-        self.train_neg_g = dgl.graph((train_neg_u, train_neg_v), num_nodes=num_nodes)
-        self.test_neg_g  = dgl.graph((test_neg_u,  test_neg_v),  num_nodes=num_nodes)
+        self.train_neg_g = Data(edge_index=torch.stack([train_neg_u, train_neg_v]), num_nodes=num_nodes)
+        self.test_neg_g  = Data(edge_index=torch.stack([test_neg_u,  test_neg_v]),  num_nodes=num_nodes)
 
-        if "feat" in g.ndata:
+        if getattr(g, "x", None) is not None:
             for gg in (self.train_neg_g, self.test_neg_g):
-                gg.ndata["feat"] = g.ndata["feat"]
+                gg.x = g.x
 
         if self.debug:
             print(f"[split_basic] +pos train={len(train_eids)}  +pos test={len(test_eids)}")
-            print(f"[split_basic] -neg train={self.train_neg_g.num_edges()} "
-                f"-neg test={self.test_neg_g.num_edges()}")
-            
+            print(f"[split_basic] -neg train={self.train_neg_g.num_edges} "
+                f"-neg test={self.test_neg_g.num_edges}")
+
     def split_edges_classification_leaky(self, train_size=0.8, seed=0):
         """
-        Crea dos máscaras booleanas en edata:
+        Crea dos máscaras booleanas en el grafo:
             • 'train_mask' : aristas usadas para entrenar
             • 'test_mask'  : aristas usadas para evaluar
         NO se agrupan las direcciones opuestas ⇒ posible fuga de información.
@@ -613,7 +650,7 @@ class GNN:
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        rel = self.dgl_graph.edata["Relationship"]      # 0/1/2/-1
+        rel = self.graph.Relationship      # 0/1/2/-1
         is_lbl = rel >= 0                               # sólo etiquetadas
 
         all_eids = torch.nonzero(is_lbl, as_tuple=False).squeeze()   # tensor 1-D
@@ -626,7 +663,7 @@ class GNN:
         test_eids  = all_eids[idx[n_train:]]
 
         # máscaras
-        num_e = self.dgl_graph.num_edges()
+        num_e = self.graph.num_edges
         train_mask = torch.zeros(num_e, dtype=torch.bool)
         test_mask  = torch.zeros(num_e, dtype=torch.bool)
 
@@ -634,8 +671,8 @@ class GNN:
         test_mask[test_eids]   = True
         # las aristas −1 quedan con ambas máscaras a False
 
-        self.dgl_graph.edata["train_mask"] = train_mask
-        self.dgl_graph.edata["test_mask"]  = test_mask
+        self.graph.train_mask = train_mask
+        self.graph.test_mask  = test_mask
 
         # ── resumen rápido ────────────────────────────────────────────
         cnt_tr = Counter(rel[train_mask].tolist())
@@ -652,11 +689,11 @@ class GNN:
                                 mode: str = "minmax"  # opciones: "minmax", "zscore", "uniform"
                                 ):
         """
-        Crea/repone ndata['feat'] con ruido controlado y lo normaliza.
+        Crea/repone graph.x con ruido controlado y lo normaliza.
 
         • dim  : nº de columnas
         • std  : σ inicial del N(0,σ²)  (cuanto menor, menos dispersión)
-        • mode : 
+        • mode :
             'zscore' → normaliza cada columna a media 0 y varianza 1
             'minmax' → normaliza cada columna al rango [0,1]
             'uniform' → genera valores directamente en [0,1] sin normalizar
@@ -664,7 +701,7 @@ class GNN:
         if seed is not None:
             torch.manual_seed(seed)
 
-        n = self.dgl_graph.num_nodes()
+        n = self.graph.num_nodes
 
         if mode == "zscore":
             x = torch.randn(n, dim) * std
@@ -685,7 +722,7 @@ class GNN:
         else:
             raise ValueError("mode debe ser 'zscore', 'minmax' o 'uniform'")
 
-        self.dgl_graph.ndata['feat'] = x
+        self.graph.x = x
 
         if self.debug:
             print(f"[add_random_features] feat ← ({n}, {dim})  |  mode={mode}")
@@ -699,14 +736,16 @@ class GNN:
         pueden quedar nuevos nodos que también cumplen la condición.
 
         Args:
-            degree:     umbral de grado (se eliminan nodos con grado <= degree)
+            degree: umbral de grado (se eliminan nodos con grado <= degree)
             iterations: número de pasadas
         """
-        g = self.dgl_graph
+        g = self.graph
+        # IDs originales de los nodos que sobreviven (equivale a g.ndata[dgl.NID])
+        original_ids = torch.arange(g.num_nodes)
 
         for i in range(iterations):
             # in_degree ≈ grado undirected en grafo bidireccional
-            deg = g.in_degrees()
+            deg = pyg_degree(g.edge_index[1], g.num_nodes, dtype=torch.long)
             nodes_to_remove = torch.where(deg <= degree)[0]
 
             if nodes_to_remove.numel() == 0:
@@ -715,18 +754,25 @@ class GNN:
                 break
 
             keep_nodes = torch.where(deg > degree)[0]
-            g = dgl.node_subgraph(g, keep_nodes)
+            new_ei, _, edge_mask = subgraph(keep_nodes, g.edge_index, relabel_nodes=True,
+                                            num_nodes=g.num_nodes, return_edge_mask=True)
+            new_g = Data(edge_index=new_ei, num_nodes=keep_nodes.numel())
+            for k in _edge_keys(g):
+                setattr(new_g, k, getattr(g, k)[edge_mask])
+            for k in _node_keys(g):
+                setattr(new_g, k, getattr(g, k)[keep_nodes])
+            original_ids = original_ids[keep_nodes]
+            g = new_g
 
             if self.debug:
                 print(f"[remove_low_degree iter {i+1}] Eliminados {nodes_to_remove.numel()} nodos "
-                      f"(grado <= {degree}) → quedan {g.num_nodes()} nodos, {g.num_edges()} aristas")
+                      f"(grado <= {degree}) → quedan {g.num_nodes} nodos, {g.num_edges} aristas")
 
-        self.dgl_graph = g
+        self.graph = g
 
-        # Actualizar mapeo asn → node_id usando los IDs originales guardados por DGL
+        # Actualizar mapeo asn → node_id usando los IDs originales
         if hasattr(self, 'asn_to_node_id') and self.asn_to_node_id is not None:
-            original_ids = g.ndata[dgl.NID].tolist()
-            orig_to_new  = {int(orig): new for new, orig in enumerate(original_ids)}
+            orig_to_new  = {int(orig): new for new, orig in enumerate(original_ids.tolist())}
             self.asn_to_node_id = {
                 asn: orig_to_new[orig_nid]
                 for asn, orig_nid in self.asn_to_node_id.items()
@@ -734,8 +780,8 @@ class GNN:
             }
 
         if self.debug:
-            if 'label' in self.dgl_graph.edata:
-                c = Counter(self.dgl_graph.edata['label'].tolist())
+            if getattr(self.graph, 'edge_label', None) is not None:
+                c = Counter(self.graph.edge_label.tolist())
                 print(f"[remove_low_degree] Distribución final de etiquetas: {dict(c)}")
 
     def split_edges_classification_v0(self, train_size=0.7, val_size=0.15, seed=0,
@@ -746,7 +792,7 @@ class GNN:
         • train_size: fracción para entrenamiento (default 0.7 = 70%)
         • val_size: fracción para validación (default 0.15 = 15%)
         • test_size = 1 - train_size - val_size (default 0.15 = 15%)
-        • Crea edata['train_mask'], ['val_mask'] y ['test_mask'].
+        • Crea graph.train_mask, val_mask y test_mask.
         • Devuelve (train_eids, val_eids, test_eids) si `return_eids=True`.
         • Opcionalmente los guarda como atributos (para reutilizarlos).
         """
@@ -755,8 +801,8 @@ class GNN:
         rng = random.Random(seed)
         torch.manual_seed(seed); np.random.seed(seed)
 
-        u, v  = self.dgl_graph.edges()
-        rel   = self.dgl_graph.edata["Relationship"]
+        u, v  = self.graph.edge_index[0], self.graph.edge_index[1]
+        rel   = self.graph.Relationship
         is_lbl = rel >= 0
 
         # 1.- Agrupar dos direcciones
@@ -767,11 +813,11 @@ class GNN:
                 pair2eids[(min(ui, vi), max(ui, vi))].append(eid)
 
         pairs = list(pair2eids.keys());   rng.shuffle(pairs)
-        
+
         # Split train/val/test
         n_train = int(len(pairs) * train_size)
         n_val = int(len(pairs) * val_size)
-        
+
         train_pairs = pairs[:n_train]
         val_pairs   = pairs[n_train:n_train + n_val]
         test_pairs  = pairs[n_train + n_val:]
@@ -783,18 +829,18 @@ class GNN:
 
         # 2.- Máscaras booleanas
         # --------------------------
-        num_e = self.dgl_graph.num_edges()
+        num_e = self.graph.num_edges
         train_mask = torch.zeros(num_e, dtype=torch.bool)
         val_mask   = torch.zeros(num_e, dtype=torch.bool)
         test_mask  = torch.zeros(num_e, dtype=torch.bool)
-        
+
         train_mask[train_eids] = True
         val_mask[val_eids]     = True
         test_mask[test_eids]   = True
 
-        self.dgl_graph.edata["train_mask"] = train_mask
-        self.dgl_graph.edata["val_mask"]   = val_mask
-        self.dgl_graph.edata["test_mask"]  = test_mask
+        self.graph.train_mask = train_mask
+        self.graph.val_mask   = val_mask
+        self.graph.test_mask  = test_mask
 
         # 3.- Opcional: guardo para sampling
         # --------------------------
