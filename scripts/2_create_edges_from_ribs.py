@@ -159,6 +159,5 @@ if __name__ == '__main__':
         print(f"CREANDO ARCHIVO edges para {rib_file}")
         print("#####################################################")
 
-        data_path = "/media/vale/KINGSTON/TESIS/data_2026/"
-        # data_path = "/media/vale/KINGSTON/TESIS/data/RIBs/"
+        data_path = "/media/vale/KINGSTON/as-level-internet-graph/grafos/"
         create_graph_edges(rib_file, data_path = data_path)
