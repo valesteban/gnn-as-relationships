@@ -3,6 +3,9 @@ import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv, GCNConv, GATConv
 import torch
 
+# TODO: Arreglar parameetro num_heads para que sea igual n todos los modlos
+# TODO: Arrglar een modelos con graphSAGE que aggr sa un paramtro qu s puda cambiar
+
 # 1. Decodificadores
 #    Reciben `edge_index` (2, E) con las aristas a puntuar y los embeddings `h` (N, F).
 class MLPPredictor(nn.Module):
@@ -57,10 +60,15 @@ class GCN3L(nn.Module):
         self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim)
         self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
+
+        #TODO: ¿Cuanto ocupamos este?
         self.regressor = nn.Linear(out_feats, 1)
+        
+        
         self.drop = nn.Dropout(drop)
 
     def encode(self, x, edge_index):
+        #TODO: ¿Por que ocupar dropout despues de cada GNN?
         h = self.drop(F.relu(self.conv1(x, edge_index)))
         h = self.drop(F.relu(self.conv2(h, edge_index)))
         return self.conv3(h, edge_index)
@@ -191,7 +199,7 @@ class GCN2L(nn.Module):
 class GraphSAGE2L(nn.Module):
     def __init__(self, in_feats, hidden_feats, out_feats, out_feats_mlp=1, drop=0.3, edge_dim=0):
         super().__init__()
-        self.conv1 = SAGEConv(in_feats, hidden_feats, aggr='mean')
+        self.conv1 = SAGEConv(in_feats, hidden_feats, aggr='mean') # FIXME: agregator sea un parámtro
         self.conv2 = SAGEConv(hidden_feats, out_feats, aggr='mean')
 
         self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim)
