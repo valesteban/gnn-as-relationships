@@ -3,6 +3,11 @@ import numpy as np
 from collections import defaultdict
 import random
 import bz2, gzip
+import json, re
+import time
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 from collections import Counter, defaultdict
 from tqdm import tqdm
 import random
@@ -64,6 +69,63 @@ class GNN:
     def __init__(self, debug=False):
         self.debug = debug
         self.graph = None
+
+    # ------------------------------------------------------------------
+    # Tiempos de entrenamiento
+    # ------------------------------------------------------------------
+    @staticmethod
+    def formato_tiempo(segundos):
+        """Formatea segundos como '3m 12.4s'."""
+        mins, secs = divmod(float(segundos), 60)
+        return f"{int(mins)}m {secs:.1f}s"
+
+    @staticmethod
+    @contextmanager
+    def timer(nombre="", imprimir=True):
+        """Mide cuánto demora un bloque; el resultado queda en `.segundos` al salir.
+
+        Uso:
+            with GNN.timer("GCN2L (MLP)") as t:
+                ...entrenamiento...
+            t.segundos   # float
+        """
+        class _Tiempo:
+            segundos = 0.0
+
+        t = _Tiempo()
+        t0 = time.perf_counter()
+        try:
+            yield t
+        finally:
+            t.segundos = time.perf_counter() - t0
+            if imprimir:
+                print(f"[TIEMPO] {nombre}: {GNN.formato_tiempo(t.segundos)}  ({t.segundos:.1f}s total)")
+
+    @staticmethod
+    def _tiempo_path(embeddings_path):
+        # embeddings_ribs_X.pt -> embeddings_ribs_X.tiempo.json ; bgp2vec.word2vec -> bgp2vec.tiempo.json
+        return Path(embeddings_path).with_suffix(".tiempo.json")
+
+    @staticmethod
+    def save_tiempo_embedding(embeddings_path, tiempo_s, epocas=None, **extra):
+        """Guarda junto al archivo de embeddings cuánto demoró en entrenarse el modelo que los generó.
+
+        El clasificador ANN (por partes) lo lee con `load_tiempo_embedding` para
+        reportar el tiempo total embedding + clasificador.
+        """
+        datos = {"embeddings": Path(embeddings_path).name, "tiempo_s": round(float(tiempo_s), 2),
+                 "epocas": epocas, "fecha": datetime.now().isoformat(timespec="seconds"), **extra}
+        with open(GNN._tiempo_path(embeddings_path), "w", encoding="utf-8") as f:
+            json.dump(datos, f, indent=2, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def load_tiempo_embedding(embeddings_path):
+        """Lee el tiempo guardado por `save_tiempo_embedding`; {} si no existe (embeddings antiguos)."""
+        ruta = GNN._tiempo_path(embeddings_path)
+        if not ruta.exists():
+            return {}
+        with open(ruta, encoding="utf-8") as f:
+            return json.load(f)
 
     def _reverse_relationship_value(self, value):
         """Invierte la relación para la arista en sentido contrario.
@@ -204,6 +266,12 @@ class GNN:
             'degree_centrality',
             'betweenness_centrality',
             'eigenvector_centrality',
+            # Formato as-level-internet-graph (as_features.csv)
+            'degree',
+            'weighted_degree',
+            'transit_degree',
+            'pagerank',
+            'k_core',
         ]
         feat_cols = [c for c in centrality_cols if c in df_n.columns]
         if not feat_cols:
@@ -354,6 +422,174 @@ class GNN:
         if self.debug:
             c = Counter(g.edge_label.tolist())
             print(f"[CAIDA] Conteo final de etiquetas 0/1/2/−1 → {c}")
+
+    def _read_caida_relationships(self, caida_file):
+        """Lee un archivo CAIDA AS-Relationships (serial-1).
+
+        Formato CAIDA:
+          <provider-as>|<customer-as>|-1
+          <peer-as>|<peer-as>|0
+        Cualquier otro tipo de relación se ignora.
+
+        Devuelve {(asn_menor, asn_mayor): etiqueta}, con la etiqueta vista desde
+        el ASN menor: 0 = P2P, 1 = C2P, 2 = P2C.
+        """
+        caida_file = str(caida_file)
+        opener = (bz2.open  if caida_file.endswith(".bz2") else
+                  gzip.open if caida_file.endswith(".gz")  else
+                  open)
+
+        relaciones = {}
+        with opener(caida_file, "rt") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                campos = line.strip().split("|")
+                a, b, rel = int(campos[0]), int(campos[1]), campos[2]
+                if rel == "0":          # P2P simétrico
+                    lbl = 0
+                elif rel == "-1":       # a es proveedor de b
+                    lbl = 2 if a < b else 1
+                else:
+                    continue
+                relaciones[(min(a, b), max(a, b))] = lbl
+        return relaciones
+
+    @staticmethod
+    def caida_file_for_graph(graph_dir, caida_dir):
+        """Devuelve el archivo CAIDA del mes del grafo.
+
+        La carpeta del grafo se llama AAAAMMDDTHHMM (as-level-internet-graph) y
+        CAIDA publica un snapshot el día 1 de cada mes: para 20260916T0800 se usa
+        caida_dir/20260901.as-rel.txt.bz2.
+        """
+        graph_dir = Path(graph_dir)
+        m = re.match(r"(\d{4})(\d{2})\d{2}T\d{4}$", graph_dir.name)
+        if m is None:
+            raise ValueError(
+                f"La carpeta del grafo debe llamarse AAAAMMDDTHHMM: {graph_dir.name}"
+            )
+        nombre = f"{m.group(1)}{m.group(2)}01.as-rel.txt.bz2"
+        caida_file = Path(caida_dir) / nombre
+        if not caida_file.exists():
+            raise FileNotFoundError(
+                f"No existe {caida_file}. Descargar desde "
+                f"https://publicdata.caida.org/datasets/as-relationships/serial-1/{nombre}"
+            )
+        return caida_file
+
+    def label_edges_from_caida(self, edges_csv, caida_file, output_csv=None):
+        """Agrega la columna 'relationship' a un CSV de aristas usando CAIDA.
+
+        La etiqueta sigue el sentido de cada fila (src_asn → dst_asn): 0 = P2P,
+        1 = C2P, 2 = P2C. Los enlaces que no están en CAIDA quedan en -1. No se
+        agregan aristas ni nodos y no se reordenan las filas (el orden determina
+        los splits).
+
+        Si output_csv no es None, escribe el CSV etiquetado y, en la misma
+        carpeta, etiquetas_caida.json con el resumen. Devuelve el resumen.
+        """
+        df_e = pd.read_csv(edges_csv)
+        required_cols = {"src_asn", "dst_asn"}
+        if not required_cols.issubset(df_e.columns):
+            missing = required_cols - set(df_e.columns)
+            raise ValueError(f"Faltan columnas requeridas en edges_csv: {missing}")
+
+        relaciones = self._read_caida_relationships(caida_file)
+
+        src = df_e["src_asn"].astype("int64").tolist()
+        dst = df_e["dst_asn"].astype("int64").tolist()
+        etiquetas = np.full(len(df_e), -1, dtype=np.int8)
+        enlaces = set()
+        for i, (u, v) in enumerate(zip(src, dst)):
+            key = (u, v) if u < v else (v, u)
+            enlaces.add(key)
+            lbl = relaciones.get(key)
+            if lbl is None:
+                continue
+            # La etiqueta de CAIDA está vista desde el ASN menor
+            etiquetas[i] = lbl if u < v else self._reverse_relationship_value(lbl)
+        df_e["relationship"] = etiquetas
+
+        conteo = Counter(etiquetas.tolist())
+        caida_en_grafo = sum(1 for k in enlaces if k in relaciones)
+        resumen = {
+            "edges_csv": str(edges_csv),
+            "caida_file": str(caida_file),
+            "aristas": len(df_e),
+            "p2p": conteo.get(0, 0),
+            "c2p": conteo.get(1, 0),
+            "p2c": conteo.get(2, 0),
+            "sin_etiqueta": conteo.get(-1, 0),
+            "caida_total": len(relaciones),
+            "caida_en_grafo": caida_en_grafo,
+            "caida_ausentes": len(relaciones) - caida_en_grafo,
+        }
+
+        if output_csv is not None:
+            output_csv = Path(output_csv)
+            df_e.to_csv(output_csv, index=False)
+            resumen["output_csv"] = str(output_csv)
+            with open(output_csv.parent / "etiquetas_caida.json", "w", encoding="utf-8") as f:
+                json.dump(resumen, f, indent=2, ensure_ascii=False)
+
+        if self.debug:
+            print(f"[CAIDA] {resumen}")
+        return resumen
+
+    def build_tor_dataset(self, edges_csv, output_dir, test_size=0.2, seed=42):
+        """Crea el dataset ToR del clasificador ANN (enfoque por partes) desde un CSV etiquetado.
+
+        Usa los enlaces con relationship != -1 de edges_csv (p. ej. gnn_edges_caida.csv),
+        así las etiquetas son del mismo mes que el grafo. El split train/test se hace
+        por enlace no dirigido y estratificado por etiqueta, de modo que las dos
+        direcciones de un enlace quedan en el mismo split. Cada enlace aporta las dos
+        direcciones, con la etiqueta invertida en la segunda (mismo formato que el
+        antiguo scripts/create_tor_dataset.py).
+
+        Escribe en output_dir: x_training.npy / x_test.npy (pares de ASN como strings,
+        forma (N, 2)) e y_training.npy / y_test.npy (0 = P2P, 1 = C2P, 2 = P2C).
+        Devuelve un resumen con los tamaños y la distribución de clases.
+        """
+        from sklearn.model_selection import train_test_split
+
+        df_e = pd.read_csv(edges_csv, usecols=["src_asn", "dst_asn", "relationship"])
+        df_e = df_e[df_e["relationship"] != -1]
+
+        pairs = df_e[["src_asn", "dst_asn"]].to_numpy()
+        labels = df_e["relationship"].to_numpy()
+        idx_train, idx_test = train_test_split(
+            np.arange(len(df_e)), test_size=test_size, random_state=seed, stratify=labels
+        )
+
+        def both_directions(idx):
+            x = np.concatenate([pairs[idx], pairs[idx][:, ::-1]]).astype(str)
+            y = np.concatenate([labels[idx],
+                                [self._reverse_relationship_value(int(v)) for v in labels[idx]]])
+            return x, y.astype(np.int64)
+
+        x_train, y_train = both_directions(idx_train)
+        x_test, y_test = both_directions(idx_test)
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        np.save(output_dir / "x_training.npy", x_train)
+        np.save(output_dir / "x_test.npy", x_test)
+        np.save(output_dir / "y_training.npy", y_train)
+        np.save(output_dir / "y_test.npy", y_test)
+
+        resumen = {
+            "edges_csv": str(edges_csv),
+            "enlaces_etiquetados": len(df_e),
+            "train": len(y_train),
+            "test": len(y_test),
+            "dist_train": {int(k): int(v) for k, v in Counter(y_train.tolist()).items()},
+            "dist_test": {int(k): int(v) for k, v in Counter(y_test.tolist()).items()},
+            "seed": seed,
+        }
+        if self.debug:
+            print(f"[ToR] {resumen}")
+        return resumen
 
 
     def split_edges_classification(self, train_size=0.7, val_size=0.15, seed=0,
@@ -784,6 +1020,7 @@ class GNN:
                 c = Counter(self.graph.edge_label.tolist())
                 print(f"[remove_low_degree] Distribución final de etiquetas: {dict(c)}")
 
+    # FIXME: comparar con l original ¿cual djo ?¿cual s la difrncia ntr ambos?
     def split_edges_classification_v0(self, train_size=0.7, val_size=0.15, seed=0,
                                 return_eids=False, store_eids=True):
         """

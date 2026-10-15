@@ -41,9 +41,9 @@ Conocer estas relaciones (*Type of Relationship*, ToR) es fundamental para model
 
 Este repositorio es el código de una tesis (NIC Chile Research Labs / DCC, Universidad de Chile; ver `build/comment.cut`) que aborda el problema como **clasificación de aristas multiclase sobre el grafo AS-level de Internet**:
 
-1. Se construye la topología a partir de tablas de enrutamiento BGP (RIBs de RouteViews / RIPE RIS, vía BGPStream).
-2. Cada AS (nodo) se enriquece con atributos estructurales (centralidades) y de negocio (PeeringDB).
-3. Las aristas se etiquetan con el dataset de referencia **CAIDA AS-Relationships** (`as-rel.txt.bz2`).
+1. Se construye la topología a partir de tablas de enrutamiento BGP (RIBs de RouteViews / RIPE RIS, vía BGPStream). Desde octubre de 2026 esto lo hace el repositorio hermano [`as-level-internet-graph`](https://github.com/valesteban/as-level-internet-graph).
+2. Cada AS (nodo) se enriquece con atributos estructurales (grados, PageRank, k-core) y de negocio (PeeringDB). También lo hace `as-level-internet-graph`.
+3. Las aristas se etiquetan en este repositorio con el dataset de referencia **CAIDA AS-Relationships** (`as-rel.txt.bz2`), mediante `GNN.label_edges_from_caida`.
 4. Una GNN aprende *embeddings* de los AS y un *decoder* de aristas predice la clase P2P / C2P / P2C.
 
 Se exploran dos familias de experimentos, cada una en su notebook:
@@ -56,8 +56,8 @@ Se exploran dos familias de experimentos, cada una en su notebook:
 **Grafo.** El grafo es un `torch_geometric.data.Data` dirigido y homogéneo:
 
 * **Nodos** = AS, indexados por `node_id` (entero contiguo 0..N-1) con un mapeo `asn ↔ node_id` guardado en el CSV de nodos.
-* **Aristas** = adyacencias observadas en AS_PATHs. Cada enlace no dirigido se materializa como **dos aristas dirigidas** `(u→v)` y `(v→u)`. Esto es esencial porque la etiqueta es *direccional*: si `(u→v)` es C2P (`1`), entonces `(v→u)` es P2C (`2`); P2P (`0`) es simétrica. La regla de inversión `{0:0, 1:2, 2:1}` está implementada en `GNN._reverse_relationship_value` (`modules/gnn.py:37`) y en `add_atributes_edges` (`scripts/4_add_atributes.py:355-413`).
-* `data.x`: matriz de atributos de nodo (72 columnas en el dataset actual, ver §3.2).
+* **Aristas** = adyacencias observadas en AS_PATHs. Cada enlace no dirigido se materializa como **dos aristas dirigidas** `(u→v)` y `(v→u)`. Esto es esencial porque la etiqueta es *direccional*: si `(u→v)` es C2P (`1`), entonces `(v→u)` es P2C (`2`); P2P (`0`) es simétrica. La regla de inversión `{0:0, 1:2, 2:1}` está implementada en `GNN._reverse_relationship_value` y la usan `_make_edges_bidirectional` (al cargar) y `label_edges_from_caida` (al etiquetar) en `modules/gnn.py`.
+* `data.x`: matriz de atributos de nodo (85 columnas con los grafos de `as-level-internet-graph`; 72 con el grafo antiguo de marzo 2026; ver §3.2).
 * `data.edge_index`: aristas dirigidas `(2, E)`.
 * `data.edge_label`: etiqueta `0/1/2/-1` (`torch.long`).
 * `data.edge_attr`: peso normalizado de la arista (frecuencia con la que el par aparece en los AS_PATH), forma `(E, 1)`.
@@ -81,12 +81,12 @@ Versiones verificadas en el entorno `env310` de la máquina de desarrollo (la ve
 | Python | 3.10.12 (kernel Jupyter `env310`) | Todo |
 | PyTorch | 2.3.0 (+cu121) | Modelos, entrenamiento |
 | **PyTorch Geometric** | **2.8.0** (+ `pyg_lib`, `torch_scatter`, `torch_sparse`, `torch_cluster`) | `Data`, `GCNConv`, `SAGEConv`, `GATConv`, `LinkNeighborLoader`, `ClusterData`/`ClusterLoader`, `Node2Vec` |
-| NetworkX | (sin fijar) | Centralidades en `scripts/4_add_atributes.py`; pipeline legado `modules/graph.py` |
+| NetworkX | (sin fijar) | Pipeline legado `modules/graph.py` |
 | pandas / numpy | 2.3.3 / 2.2.6 | I/O CSV, normalización |
 | scikit-learn | 1.7.2 | Métricas (F1, matriz de confusión, ROC-AUC), `train_test_split`, `compute_class_weight` |
 | gensim | 4.4.0 | Word2Vec para BGP2Vec (`modules/bgp2vec.py`) |
-| pybgpstream | 2.0.4 (`_pybgpstream`) | Descarga de RIBs (`scripts/1_ribs_extraction.py`) |
-| requests, urllib | 2.25.1 | API PeeringDB, descargas LACNIC/CAIDA |
+| pybgpstream | 2.0.4 (`_pybgpstream`) | Ya no se usa aquí: la descarga de RIBs pasó a `as-level-internet-graph` |
+| requests, urllib | 2.25.1 | API PeeringDB y LACNIC (`src/`) |
 | PyYAML | 5.4.1 | Solo `modules/graph.py` (legado) |
 | tqdm, matplotlib, seaborn, umap-learn, scipy | — | Progreso y visualización en notebooks |
 
@@ -98,7 +98,8 @@ Versiones verificadas en el entorno `env310` de la máquina de desarrollo (la ve
 
 ```
 gnn-as-relationships/
-├── README.md                                   # Descripción, ubicación de datos, instalación y pipeline
+├── README.md                                   # Descripción, ubicación de datos, instalación y flujo de trabajo
+├── CLAUDE.md                                   # Contexto resumido del proyecto para Claude Code
 ├── DOCUMENTATION.md                            # este documento
 ├── .gitignore                                  # ignora *.csv, *.md, *.json, *.txt, data/*, results/* (ver §5)
 │
@@ -106,8 +107,9 @@ gnn-as-relationships/
 ├── AS_relationship_inference_por_partes.ipynb  # ★ Enfoque en dos etapas: embeddings + clasificador ANN
 │
 ├── modules/                                    # Código reutilizable importado por los notebooks
-│   ├── gnn.py            # ★ Clase GNN: carga CSV→Data (PyG), etiquetado CAIDA, splits, features aleatorias, poda
+│   ├── gnn.py            # ★ Clase GNN: etiquetado CAIDA de gnn_edges.csv, carga CSV→Data (PyG), splits, features aleatorias, poda
 │   ├── gnn_models.py     # ★ Encoders GCN/GraphSAGE/GAT (2L, 3L, *Sample2L) y decoders MLP/Bilinear/DotProduct
+│   ├── experiment.py     # set_seed (reproducibilidad) y save_run (métricas, pesos e historial de cada modelo)
 │   ├── graph.py          # Pipeline LEGADO: clase Graph (NetworkX) → dataset multi-grafo mensual (meta.yaml, graphs.csv)
 │   ├── bgp2vec.py        # RIBCorpus (streaming de AS_PATHs) + BGP2VEC (Word2Vec skip-gram sobre rutas)
 │   └── bgp2vec/          # Versión anterior de BGP2Vec (copia casi idéntica de bgp2vec.py)
@@ -116,12 +118,8 @@ gnn-as-relationships/
 │       ├── bgp2vec.word2vec  # modelo Word2Vec entrenado (binario)
 │       └── ToR_bgp2vec.ipynb # notebook Keras/TensorFlow del baseline BGP2Vec + NN
 │
-├── scripts/                                    # Pipeline de datos (numerados en orden de ejecución)
-│   ├── 1_ribs_extraction.py        # BGPStream → rib_<inicio>_to_<fin>.txt (un AS_PATH por línea, separador |)
-│   ├── 2_create_edges_from_ribs.py # AS_PATHs → nodes_*.csv / edges_*.csv (+ versión _pruned sin hojas)
-│   ├── 3_filter_by_country.py      # (opcional) subgrafo por país: LACNIC + IXPs/facilities PeeringDB + vecinos 1-hop
-│   ├── 4_add_atributes.py          # Centralidades + atributos PeeringDB (nodos) y etiquetas CAIDA (aristas) → *_enriched_tesis.csv
-│   └── create_tor_dataset.py       # CAIDA as-rel → dataset ToR (x_training/x_test/y_*.npy) para el enfoque por partes
+├── scripts/
+│   └── correr_experimento.py   # Corre ambos notebooks sobre todos los grafos de un experimento (§4.7)
 │
 ├── src/                                        # Utilidades de datos externos
 │   ├── lacnic.py            # Descarga/parseo de delegated-lacnic-extended-latest → ASNs por país
@@ -130,10 +128,6 @@ gnn-as-relationships/
 │   ├── utils.py             # month_number_to_name (1..12 → "enero".."diciembre")
 │   ├── graph_builder.py     # VACÍO (0 bytes)
 │   └── __pycache__/utils.py # Archivo fuente extraviado dentro de __pycache__ (versión antigua de utils con imports de sklearn/torch)
-│
-├── data/                                       # Dataset actual (trackeado a la fuerza pese a .gitignore; ~42 MB)
-│   ├── nodes_rib_20260301_0000_to_20260302_0000_enriched_tesis.csv   # 79 504 nodos × 74 columnas
-│   └── edges_rib_20260301_0000_to_20260302_0000_enriched_tesis.csv   # 734 381 aristas dirigidas × 6 columnas
 │
 ├── notebooks/                                  # Análisis exploratorio y de resultados (no entrenan modelos)
 │   ├── analisis_ribs_recolectadas.ipynb     # Calidad de RIBs de distintas duraciones (30 min … 24 h)
@@ -153,9 +147,12 @@ gnn-as-relationships/
 
 | Componente | Estado | Comentario |
 |---|---|---|
-| `modules/gnn.py`, `modules/gnn_models.py` | **Activo** | Núcleo del proyecto |
-| `scripts/1..4_*.py`, `src/*.py` | **Activo** | Pipeline de datos vigente (formato `nodes_*/edges_*` plano) |
-| `scripts/create_tor_dataset.py`, `modules/bgp2vec.py` | Activo (enfoque por partes) | |
+| `modules/gnn.py`, `modules/gnn_models.py`, `modules/experiment.py` | **Activo** | Núcleo del proyecto |
+| `scripts/1..4_*.py`, `scripts/create_tor_dataset.py` | **Eliminados** (commit `4fcb754`) | La construcción del grafo pasó a `as-level-internet-graph` y el etiquetado CAIDA a `GNN.label_edges_from_caida`. Siguen en el historial de git y en `main` / `v1.0-dgl`. |
+| `data/` (grafo de marzo 2026) | **Eliminado** del repo | Copia en `/media/vale/KINGSTON/TESIS/data_2026/` (ver §4.3) |
+| `src/*.py` | Sin uso | Utilidades que usaban los scripts eliminados |
+| `modules/bgp2vec.py` | Activo (enfoque por partes) | |
+| `scripts/correr_experimento.py` | **Activo** | Ejecución por lotes de los notebooks sobre un experimento (§4.7) |
 | `modules/graph.py` | **Legado** | Formato multi-grafo mensual; ya no lo usan los notebooks. Contiene bugs (§5.1) |
 | `modules/bgp2vec/` | Legado | Duplicado de `modules/bgp2vec.py` + baseline Keras |
 | `src/graph_builder.py` | Vacío | |
@@ -210,25 +207,23 @@ h = relu(conv1(x, edge_index)); h = conv2(h, edge_index)
 
 ### 3.2 Pipeline de procesamiento de datos
 
+La construcción y el enriquecimiento del grafo se hacen en el repositorio hermano [`as-level-internet-graph`](https://github.com/valesteban/as-level-internet-graph). Este repositorio solo etiqueta las aristas con CAIDA y entrena. El pipeline anterior (`scripts/1..4_*.py`, que producía `nodes_rib_*_enriched_tesis.csv` / `edges_rib_*_enriched_tesis.csv`) se eliminó en el commit `4fcb754`. Sigue disponible en el historial de git y en `main` / `v1.0-dgl`.
+
 ```
- RouteViews / RIPE RIS (BGPStream)
-          │  scripts/1_ribs_extraction.py
+ RouteViews / RIPE RIS (BGPStream, todos los recolectores, ventana de 15 min)
+          │  as-level-internet-graph:  python as_graph.py … ;  scripts/enriquecer_nodos.py
           ▼
- rib_<YYYYMMDD_HHMM>_to_<YYYYMMDD_HHMM>.txt        (AS1|AS2|...|ASn, un AS_PATH único por línea, solo IPv4)
-          │  scripts/2_create_edges_from_ribs.py
+ GRAFO_DIR = /media/vale/KINGSTON/as-level-internet-graph/experimentos/experimento<N>/grafos/<año>/<mes>/<AAAAMMDDTHHMM>/
+   ├─ as_features.csv   node_id, asn, +85 features en [0,1]   (node_id = fila)
+   ├─ gnn_edges.csv     src_id, dst_id, src_asn, dst_asn, weight, weight_raw   (1 fila por enlace no dirigido)
+   └─ stats.json, as_nodes.csv, as_edges.csv, as_graph.graphml, …
+          │  GNN.label_edges_from_caida(gnn_edges.csv, CAIDA AAAAMM01.as-rel.txt.bz2, output_csv=…)
           ▼
- nodes_rib_*.csv (node_id,asn,weight)   edges_rib_*.csv (src_id,dst_id,src_asn,dst_asn,weight)
- nodes_rib_*_pruned.csv / edges_rib_*_pruned.csv    (sin hojas, 3 iteraciones)
-          │  scripts/3_filter_by_country.py   (opcional, p.ej. nodes_cl_rib_*.csv)
-          │  scripts/4_add_atributes.py
-          │      ├─ NetworkX: degree / betweenness(k=100) / eigenvector / PageRank
-          │      ├─ PeeringDB dump JSON (publicdata.caida.org) → numéricos + one-hot
-          │      └─ CAIDA as-rel.txt.bz2 → relationship {0,1,2,-1} + aristas inversas
+   ├─ gnn_edges_caida.csv     gnn_edges.csv + relationship {0,1,2,-1}   (mismas filas, mismo orden)
+   └─ etiquetas_caida.json    resumen del etiquetado
+          │  GNN.load_dataset(as_features.csv, gnn_edges_caida.csv)
           ▼
- nodes_rib_*_enriched_tesis.csv (node_id,asn,+72 feats)   edges_rib_*_enriched_tesis.csv (…,weight,relationship)
-          │  modules/gnn.py :: GNN.load_dataset()
-          ▼
- torch_geometric.data.Data  x (N×72) · edge_index (2×E) · edge_label (E) · edge_attr (E×1)
+ torch_geometric.data.Data  x (N×85) · edge_index (2×E) · edge_label (E) · edge_attr (E×1)
           │  GNN.split_edges_classification()  /  split_edges_link_prediction()  /  split_graph_nodes()
           ▼
  data.train_mask | val_mask | test_mask  (+ gnn.train_eids / val_eids / test_eids)
@@ -237,63 +232,84 @@ h = relu(conv1(x, edge_index)); h = conv2(h, edge_index)
  métricas · matrices de confusión · embeddings (.pt) · pesos (.pth)
 ```
 
-#### 3.2.1 Extracción de RIBs (`scripts/1_ribs_extraction.py`)
+#### 3.2.1 Grafo de `as-level-internet-graph`
 
-* `BGPStream()` con `add_interval_filter(base_ts, end_ts)` y `add_filter('record-type','ribs')`; **no** se filtra por colector ni proyecto, así que se combinan todos los colectores disponibles de RouteViews y RIS.
-* Se descartan AS_PATHs con AS-sets/confederaciones (`'{'` o `'('`) y prefijos IPv6 (`":" in prefix`).
-* Deduplicación exacta de AS_PATH mediante un `set` en memoria.
-* Salida: `rib_{start}_to_{end}.txt`, un path por línea, ASNs separados por `|`.
-* `__main__` itera sobre una lista de duraciones (30 min, 1 h, 2 h, 4 h, 6 h, 12 h, 24 h) desde `03/01/2026`; el notebook `analisis_ribs_recolectadas.ipynb` compara esas capturas. El dataset final usa la de 24 h.
+Cada grafo vive en su propia carpeta `GRAFO_DIR`, como se muestra arriba. El grafo cambia entre experimentos, así que los notebooks lo eligen con **una sola variable, `GRAFO_DIR`**, y derivan de ella todo lo demás. El grafo con el que se probó esta versión es `experimento7/grafos/2026/09/20260916T0800`:
 
-#### 3.2.2 Construcción de nodos y aristas (`scripts/2_create_edges_from_ribs.py`)
+* 57 de 63 recolectores (RouteViews y RIS), ventana de 15 min.
+* 87 796 nodos y 668 426 enlaces.
 
-* `dict_nodes[asn]` = nº de apariciones del ASN en todos los AS_PATH (→ columna `weight` de nodo).
-* `dict_edges[(as_i, as_{i+1})]` = nº de veces que el par consecutivo aparece (→ `weight` de arista). Las aristas se guardan **en el sentido del AS_PATH** (origen → destino) y se omiten self-loops (`as1 == as2`, típico de *prepending*).
-* `asn_to_id` asigna `node_id` por orden numérico del ASN (como string → orden lexicográfico; ver §5).
-* `prune_leaves(...)` elimina iterativamente (3 pasadas) nodos con grado no dirigido ≤ 1 y reindexa; genera los archivos `_pruned`.
+Qué es cada experimento está en `experimento.json` / `DESCRIPCION.md` de cada carpeta y en `EXPERIMENTOS.md`, en la raíz del disco.
 
-#### 3.2.3 Filtro por país (`scripts/3_filter_by_country.py`, opcional)
+* **Nodos (`as_features.csv`)**: `node_id` (= número de fila), `asn` y 85 features en `[0,1]`, sin NaN:
+  * Numéricas (`log1p + min-max` dentro de cada grafo): `degree`, `weighted_degree`, `transit_degree`, `pagerank`, `k_core`, `info_prefixes4`, `info_prefixes6`, `ix_count`, `fac_count`, `antiguedad_anios`, `policy_ratio`.
+  * Binarias: `in_peeringdb`, `info_unicast`, `info_multicast`, `info_ipv6`, `info_never_via_route_servers`, `has_irr_as_set`.
+  * One-hot con **vocabulario fijo**, con `__desconocido` y `__otro`: `info_types__*` (12), `policy_general__*` (6), `info_traffic__*` (20), `info_scope__*` (11), `policy_contracts__*` (5), `info_ratio__*` (7), `policy_locations__*` (7).
 
-Conjunto semilla = ASNs del país en `delegated-lacnic-extended-latest` (estado `allocated`/`assigned`) ∪ ASNs participantes en IXPs del país (`/api/ix` → `/api/netixlan`) ∪ ASNs con presencia en facilities del país (`/api/fac` → `/api/netfac` → `/api/net`). Con `include_neighbors=True` se agregan los vecinos a 1 salto. Se conservan solo aristas con ambos extremos en el conjunto y se reindexan los `node_id`. Salida `nodes_{cc}_{stem}.csv` / `edges_{cc}_{stem}.csv`.
+  El vocabulario fijo hace que las columnas sean las mismas en todas las fechas. Los grafos sin grado de tránsito (experimentos 1–6) tienen 84 features.
+* **Aristas (`gnn_edges.csv`)**: una fila por enlace no dirigido, siempre con `src_asn < dst_asn`, sin duplicados ni bucles. `weight` es la frecuencia del par en los AS_PATH con `log1p + min-max`, y `weight_raw` es la cuenta cruda (`load_dataset` la ignora). No trae etiqueta.
 
-#### 3.2.4 Enriquecimiento (`scripts/4_add_atributes.py`)
+El detalle de la construcción (normalización de AS_PATH, PeeringDB, features) está en el README de `as-level-internet-graph`.
 
-**Nodos (`add_atributes_nodes`)** — todas las columnas numéricas quedan en `[0, 1]` mediante `_log_minmax_scale = minmax(log1p(x))` y se verifican con `_check_range`:
+#### 3.2.2 Etiquetado CAIDA (`GNN.label_edges_from_caida`)
 
-| Grupo | Columnas | Fuente / cálculo |
-|---|---|---|
-| Peso | `weight` | Apariciones en AS_PATHs, `log1p + minmax` |
-| Centralidad | `degree_centrality`, `betweenness_centrality`, `eigenvector_centrality`, `PageRank` | NetworkX sobre `DiGraph` con `weight`; betweenness **aproximada** con `k=min(100, N)` muestras y `seed=42`; eigenvector con `max_iter=1000` y fallback a grafo no dirigido → ceros si no converge |
-| PeeringDB numéricos | `ix_count`, `fac_count`, `info_prefixes4`, `info_prefixes6` | `net` del dump `peeringdb_2_dump_{year}_{month}_01.json`, join por `asn`, faltantes → 0 |
-| PeeringDB categóricos (one-hot 0/1) | `policy_general_*` (5), `policy_locations_*` (6), `policy_contracts_*` (4), `info_traffic_*` (19), `info_scope_*` (11), `info_type_*` (11), `info_ratio_*` (7) | `pd.get_dummies`; vacío/NaN → categoría `Unknown` |
+CAIDA publica un snapshot de AS-Relationships (serial-1) el día 1 de cada mes. Se usa el del **mes del grafo**:
+* `GNN.caida_file_for_graph(GRAFO_DIR, CAIDA_DIR)` lee la fecha del nombre de la carpeta (`AAAAMMDDTHHMM`) y devuelve `CAIDA_DIR/AAAAMM01.as-rel.txt.bz2`.
+* Si el archivo no existe, lanza `FileNotFoundError` con la URL de descarga.
+* `CAIDA_DIR` actual: `/media/vale/KINGSTON/TESIS/data_2026/` (hay `20260301` y `20260901`).
 
-Se eliminan las columnas nuevas con varianza cero. Resultado en el dataset actual: **72 features** por nodo (`nodes_*_enriched_tesis.csv`, 74 columnas incluyendo `node_id` y `asn`). No hay columna `country` en este dataset, aunque `GNN.load_dataset` la excluiría si existiera.
+`label_edges_from_caida(edges_csv, caida_file, output_csv=None)`:
 
-**Aristas (`add_atributes_edges`)**:
+1. `_read_caida_relationships`:
+   * lee `.bz2`, `.gz` o texto plano;
+   * `p|c|-1` (p es proveedor de c) y `a|b|0` (pares) se guardan como `{(asn_menor, asn_mayor): etiqueta vista desde asn_menor}`;
+   * otros tipos de relación se ignoran.
+2. Cada fila se etiqueta según su sentido `src_asn → dst_asn`. Si `src_asn > dst_asn`, la etiqueta se invierte con `_reverse_relationship_value`. Los enlaces que no están en CAIDA quedan en `-1`.
+3. **No se agregan aristas ni nodos**: los enlaces de CAIDA ausentes del grafo solo se cuentan. **No se reordenan las filas**, porque el orden determina los splits.
+4. Con `output_csv`:
+   * escribe el CSV con todas las columnas originales más `relationship` (`int8`);
+   * escribe, en la misma carpeta, `etiquetas_caida.json` con `p2p`, `c2p`, `p2c`, `sin_etiqueta`, `aristas`, `caida_total`, `caida_en_grafo` y `caida_ausentes`.
 
-1. Parseo de CAIDA: `p|c|-1` → `(p→c)=2 (P2C)` y `(c→p)=1 (C2P)`; `a|b|0` → `0` en ambos sentidos. Deduplicación y merge `left` sobre `(src_asn, dst_asn)`; sin coincidencia → `-1`.
-2. **Garantía de arista inversa**: para cada arista con etiqueta conocida se genera la inversa con etiqueta invertida; al deduplicar se prioriza (a) etiquetas conocidas sobre `-1` y (b) filas originales sobre generadas. Por eso el CSV tiene 734 381 filas y no un número par.
-3. `weight` de arista → `log1p + minmax` (`float32`).
+   Por convención la salida es `GRAFO_DIR/gnn_edges_caida.csv`, en el disco externo. `gnn_edges.csv` no se modifica. Los notebooks etiquetan automáticamente si `gnn_edges_caida.csv` no existe.
 
-Distribución de `relationship` en `data/edges_*.csv`: `0`: 340 512 · `1`: 159 963 · `2`: 159 963 · `-1`: 73 943 (≈10 % sin etiqueta).
+Resultado para `experimento7 / 20260916T0800` con CAIDA `20260901` (525 848 relaciones):
 
-#### 3.2.5 Carga a PyG (`modules/gnn.py :: GNN`)
+| Medida | Valor |
+|---|---|
+| Enlaces etiquetados | 493 982 de 668 426 (73.9 %) |
+| `0` (P2P) | 329 589 |
+| `1` (C2P) | 28 715 |
+| `2` (P2C) | 135 678 |
+| `-1` (sin etiqueta) | 174 444 |
+| Relaciones CAIDA ausentes del grafo | 31 866 |
+
+Que haya más P2C que C2P se explica porque cada fila va del ASN menor al mayor, y el menor suele ser el proveedor. Tras la bidireccionalización, C2P y P2C quedan iguales.
+
+#### 3.2.3 Grafo antiguo de marzo 2026
+
+El grafo usado hasta septiembre de 2026 (RIB de 24 h del 1 de marzo, pipeline eliminado) sigue en `/media/vale/KINGSTON/TESIS/data_2026/`:
+* `nodes_rib_20260301_0000_to_20260302_0000_enriched_tesis.csv`: 72 features, entre ellas `weight`, `degree_centrality`, `betweenness_centrality`, `eigenvector_centrality`, `PageRank` y one-hot de PeeringDB.
+* `edges_…_enriched_tesis.csv`: ya etiquetado; 734 381 filas.
+
+`load_dataset` lo sigue leyendo sin cambios: es la prueba de regresión de §3.2.5. Su distribución de `relationship` es `0`: 340 512 · `1`: 159 963 · `2`: 159 963 · `-1`: 73 943.
+
+#### 3.2.4 Carga a PyG (`modules/gnn.py :: GNN`)
 
 `load_dataset(nodes_csv, edges_csv, add_reverse_edges=True)`:
 
-1. `_make_edges_bidirectional`: concatena el DataFrame con su copia invertida (etiqueta invertida con `_reverse_relationship_value`) y `drop_duplicates(['src_id','dst_id'], keep='first')` → la fila original prevalece. Con el dataset actual pasa de 734 381 a **807 496 aristas** (79 504 nodos).
+1. `_make_edges_bidirectional`: concatena el DataFrame con su copia invertida (etiqueta invertida con `_reverse_relationship_value`) y `drop_duplicates(['src_id','dst_id'], keep='first')` → la fila original prevalece. Con `gnn_edges_caida.csv` de 2026-09-16 pasa de 668 426 enlaces a **1 336 852 aristas** (87 796 nodos). Con el grafo antiguo de marzo pasa de 734 381 a 807 496 (79 504 nodos).
 2. `_normalize_relationship_column`: acepta `'P2P'/'C2P'/'P2C'` o `'0'/'1'/'2'/'-1'`, fuerza `int64` y lanza `ValueError` ante valores desconocidos.
 3. `Data(edge_index=torch.stack([src, dst]), num_nodes=len(df_n))` — asume que `src_id/dst_id` son índices de fila de `df_n`.
 4. `x` = todas las columnas excepto `node_id, asn, country` (`float32`); `edge_label` (`long`); `edge_attr` = `weight` `(E,1)`.
 5. Guarda `self.asn_to_node_id` para `_fill_labels_from_caida_stream_fast`.
 
-`load_dataset_only_cntrality_attr(...)`: igual pero `feat` = `[weight, PageRank, degree_centrality, betweenness_centrality, eigenvector_centrality]` **estandarizadas con z-score** (media 0, desviación 1; columnas constantes → std=1). Comentario en el código: sin esto la GNN colapsa por las escalas dispares.
+`load_dataset_only_cntrality_attr(...)`: igual, pero las features son solo las columnas estructurales presentes en el CSV, **estandarizadas con z-score**. En el formato nuevo son `degree`, `weighted_degree`, `transit_degree`, `pagerank` y `k_core`; en el antiguo, `weight`, `PageRank`, `degree_centrality`, `betweenness_centrality` y `eigenvector_centrality`. El z-score deja media 0 y desviación 1; las columnas constantes usan std=1. Comentario en el código: sin esto la GNN colapsa por las escalas dispares.
 
-`_fill_labels_from_caida_stream_fast(caida_file)`: alternativa in-memory al paso 4 de scripts: recorre el `.bz2/.gz/.txt` de CAIDA, etiqueta aristas existentes (`eid_map` dict `(u,v)→eid`), agrega aristas faltantes y crea nodos nuevos con `feat = 0` para ASNs ausentes.
+`_fill_labels_from_caida_stream_fast(caida_file)`: alternativa in-memory a `label_edges_from_caida`, que los notebooks no usan. Recorre el `.bz2/.gz/.txt` de CAIDA, etiqueta aristas existentes (`eid_map` dict `(u,v)→eid`), agrega aristas faltantes y crea nodos nuevos con `feat = 0` para ASNs ausentes.
 
 Otras utilidades: `add_random_features(dim, std, seed, mode∈{zscore,minmax,uniform})` (control experimental), `remove_low_degree_nodes(degree, iterations)` (poda con `torch_geometric.utils.subgraph` y remapeo de `asn_to_node_id` con los ids originales conservados).
 
-#### 3.2.6 Estrategias de split
+#### 3.2.5 Estrategias de split
 
 | Método | Tarea | Cómo evita fugas | Salida |
 |---|---|---|---|
@@ -302,9 +318,37 @@ Otras utilidades: `add_random_features(dim, std, seed, mode∈{zscore,minmax,uni
 | `split_graph_nodes(train_size=0.8)` | Regresión nodal | `randperm` de nodos | `ndata['train_mask'|'test_mask']` |
 | `split_edges_classification_leaky`, `split_edges_classification_v0` | Legado | Requieren `edata['Relationship']` (no lo produce `load_dataset`) | — |
 
-Cifras del dataset actual (outputs guardados): 660 438 aristas etiquetadas; con `proportional` 0.7/0.15 → train 462 306 / val 99 064 / test 99 068; con `strict_equal` 0.8/0.15 → train 383 910 (127 970 por clase) / val 71 982 / test 23 997 (7 999 por clase).
+Cifras con `experimento7 / 20260916T0800` + CAIDA `20260901`: 987 964 aristas dirigidas etiquetadas (P2P 659 178 · C2P 164 393 · P2C 164 393); con `proportional` 0.7/0.15 y `seed=42` → train 691 574 / val 148 194 / test 148 196.
+
+Cifras del grafo antiguo de marzo (outputs guardados): 660 438 aristas etiquetadas; con `proportional` 0.7/0.15 → train 462 306 / val 99 064 / test 99 068; con `strict_equal` 0.8/0.15 → train 383 910 (127 970 por clase) / val 71 982 / test 23 997 (7 999 por clase).
 
 ### 3.3 Esquemas de entrenamiento
+
+#### 3.3.0 Reproducibilidad y guardado (`modules/experiment.py`)
+
+**Semilla.** `set_seed(seed=42, deterministic=True)`:
+* fija `random`, `numpy`, `torch` (CPU y CUDA) y PyG (`torch_geometric.seed_everything`);
+* con `deterministic=True`, además fija `cudnn.deterministic=True` y `cudnn.benchmark=False`, activa `torch.use_deterministic_algorithms(True, warn_only=True)` y define `CUBLAS_WORKSPACE_CONFIG`.
+
+Los dos notebooks definen `SEED = 42` en la celda de configuración y la usan en todos los splits (`seed=SEED`). Además llaman a `set_seed(SEED)`:
+* al inicio de cada iteración del bucle de modelos, es decir, antes de crear cada modelo;
+* en por partes, también antes de `split_graph_nodes`, de `Node2Vec` y del clasificador ANN.
+
+Así cada modelo parte siempre del mismo estado: pesos iniciales, dropout y orden de los mini-batches de `LinkNeighborLoader`/`ClusterLoader` son los mismos. Esto vale aunque se ejecute solo esa celda o se comenten otros modelos.
+* **Comprobado en CPU:** dos procesos distintos y una segunda ejecución de la celda sin repetir el split dan métricas idénticas (Caso 0 y Caso 2).
+* **En GPU** algunas operaciones scatter de PyG no son deterministas: `warn_only` solo avisa, y los resultados pueden variar levemente.
+* **BGP2Vec** usa `seed=7` y `workers=1` en `modules/bgp2vec.py`. gensim además depende de `PYTHONHASHSEED`.
+
+**Guardado (solo end-to-end).** `save_run(RESULTS_DIR, caso, modelo, decoder, seed=…, y_true, y_pred, class_names, state_dict, history, config, extra)` se llama después de evaluar cada modelo en test. Escribe en `RESULTS_DIR/<caso>/<modelo>_<decoder>_seed<SEED>/`:
+* `metrics.json`: accuracy, macro-F1, F1 ponderado, reporte por clase, matriz de confusión, `GLOBAL_CONFIG`, semilla, `RUN_TAG`, tiempo, épocas y mejor métrica de validación;
+* `model.pth`: los pesos de la mejor época en validación;
+* `history.csv`: las curvas por época.
+
+También agrega una fila a `RESULTS_DIR/resumen.csv`. `RESULTS_DIR = GRAFO_DIR/results/end_to_end`. Los valores de `caso` son `caso0`, `caso1`, `caso2_neighbor`, `caso3_cluster`, `caso4_random` y `comparacion`. La comparación guarda solo métricas, más `tabla_comparacion_seed<SEED>.csv`. Repetir una corrida con la misma semilla sobrescribe su carpeta, porque el resultado es el mismo.
+
+**Identificador de configuración.** `<config_id>` es un hash de 6 caracteres de `config` (`GLOBAL_CONFIG`) y de `extra["clase"]` (la clase del modelo, p. ej. `GAT3L`, que fija el número de capas); en el clasificador ANN también de `extra["config_embedding"]` y `extra["clase_embedding"]` (los del GNN que generó el embedding). Re-correr con la misma configuración sobrescribe la carpeta (el resultado es idéntico); cambiar hiperparámetros o capas crea una carpeta nueva al lado, así que las corridas no se pierden. Otro grafo nunca choca: cada uno escribe en su `GRAFO_DIR/results/`. Las carpetas antiguas sin hash siguen siendo legibles. `resumen.csv` y `metricas.csv` incluyen `config_id` (y `metricas.csv` también `clase`). La función es `modules.experiment.config_id`.
+
+**Tiempos.** Las celdas miden el entrenamiento con `GNN.timer(nombre)` (o `time.perf_counter`) y pasan `tiempo_s` y `epocas` en `extra`; `resumen.csv` y `metricas.csv` los incluyen como columnas `tiempo_s`, `tiempo_total_s` y `epocas`. En por partes, cada modelo que genera embeddings (Caso0–Caso4, DeepWalk, BGP2Vec) guarda su duración en `<embedding>.tiempo.json` con `GNN.save_tiempo_embedding`; el clasificador ANN la lee con `GNN.load_tiempo_embedding` y reporta `tiempo_s` (solo ANN), `tiempo_embedding_s` y `tiempo_total_s` (suma), para comparar con el tiempo end-to-end. Si el embedding es antiguo y no tiene `.tiempo.json`, `tiempo_embedding_s` queda vacío.
 
 #### 3.3.1 End-to-end (`AS_relationship_inference_end_to_end.ipynb`)
 
@@ -367,7 +411,9 @@ Resultados registrados en los outputs del notebook (test):
 
 **Etapa B — clasificador de aristas** (`EdgeClassifierANN`):
 
-* Dataset ToR de `scripts/create_tor_dataset.py` (`x_training.npy`, `x_test.npy`, `y_*.npy`; pares de ASN como strings, split 80/20 con `train_test_split`).
+* Dataset ToR (`x_training.npy`, `x_test.npy`, `y_*.npy`; pares de ASN como strings). La celda 71 usa `TOR_PATH`:
+  * por defecto, el del grafo, `data_path/results/EnfoquePorPartes/ToR/`, creado por `GNN.build_tor_dataset` con los enlaces etiquetados del grafo y un split por enlace no dirigido;
+  * si no existe, el antiguo de marzo 2026 (`TESIS/data_2026/ToR_data/tor_data_marzo/`), que generaba `scripts/create_tor_dataset.py` desde todo el archivo CAIDA, con un split 80/20 sin separar direcciones.
 * Mapeo ASN → índice de embedding (CSV de nodos para GNN/DeepWalk, `wv.key_to_index` para BGP2Vec); pares con algún ASN fuera del vocabulario se descartan (se reporta la cobertura).
 * Vector de arista `[e_u ‖ e_v ‖ e_u − e_v ‖ e_u ⊙ e_v]` (`4·emb_dim`), construido vectorizadamente en `build_edge_features`.
 * Modelo: `Linear(4d,256) → BatchNorm → ReLU → Dropout(0.3) → Linear(256,128) → BatchNorm → ReLU → Dropout → Linear(128,3)`.
@@ -382,14 +428,14 @@ Resultados registrados en los outputs del notebook (test):
 | Split por par no dirigido + estratificación por firma | `split_edges_classification` | Si `(u→v)` está en train y `(v→u)` en test, la etiqueta de test se deduce trivialmente. Agrupar por par elimina esa fuga; la firma preserva la proporción de pares P2P vs P2C/C2P en cada split. |
 | `balance_mode="strict_equal"` | Casos 1–4 | P2P ≈ 51 % de las aristas; igualar clases evita que el modelo colapse a la mayoritaria y hace comparables los casos. Se combina con `class_weights` cuando se usa `proportional`. |
 | `focal_loss` con `γ=2` y pesos de clase | Casos 0–3 | Reduce la contribución de ejemplos fáciles (mayoría de P2P) y enfatiza C2P/P2C difíciles. |
-| Normalización `log1p + minmax` en todo atributo numérico | `4_add_atributes.py` | Grados, centralidades y prefijos siguen distribuciones de cola pesada (power-law); `log1p` comprime la cola y `minmax` lleva todo a `[0,1]` para convivir con los one-hot. Se valida con `_check_range` y en `validar_normalizacion_atributos.ipynb`. |
+| Normalización `log1p + minmax` en todo atributo numérico | `as-level-internet-graph` (`features.py`); antes `4_add_atributes.py` | Grados, centralidades y prefijos siguen distribuciones de cola pesada (power-law); `log1p` comprime la cola y `minmax` lleva todo a `[0,1]` para convivir con los one-hot. Se valida con `_check_range` y en `validar_normalizacion_atributos.ipynb`. |
 | z-score para features de centralidad | `load_dataset_only_cntrality_attr` | Escalas muy distintas (PageRank ~1e-5 vs grado ~1) hacían colapsar el entrenamiento (comentario en el código). |
 | `add_self_loop` en GCN/GAT, no en SAGE | `encode()` | `GraphConv`/`GATConv` fallan con nodos de in-degree 0 y se benefician de incluir la propia representación; `SAGEConv` ya concatena la proyección del nodo. |
 | Self-loops por defecto en `GCNConv`/`GATConv` | Todos los encoders | Cubren los nodos sin vecinos de entrada de los subgrafos muestreados (equivale al `allow_zero_in_degree` de DGL). |
 | Decoder Bilinear con `W ∈ R^{C×F×F}` | `BilinearPredictor` | Modela explícitamente la interacción `h_uᵀ W_c h_v` por clase; asimetría natural para C2P/P2C. Es más costoso (`C·F²` parámetros: 3·128² ≈ 49 k) que el MLP. |
 | `edge_feat` (peso) en el MLP decoder | `MLPPredictor(edge_dim=1)` | La frecuencia de un par en los AS_PATH correlaciona con la relación (proveedores aparecen más); se inyecta al decoder porque los encoders DGL usados no consumen features de arista. |
 | Features aleatorias (Caso 4) | `add_random_features` | Control experimental: mide cuánto aporta la estructura del grafo por sí sola frente a los atributos (GraphSAGE alcanza 85 % solo con estructura). |
-| Betweenness aproximada (`k=100`) | `4_add_atributes.py` | Betweenness exacta es O(N·E) ≈ 80 k × 730 k: inviable; el muestreo con semilla fija es reproducible. |
+| Betweenness aproximada (`k=100`) | `4_add_atributes.py` (grafo antiguo) | Betweenness exacta es O(N·E) ≈ 80 k × 730 k: inviable; el muestreo con semilla fija es reproducible. El formato nuevo no incluye betweenness. |
 | Early stopping por macro-F1 en validación | Casos 0–1 | Con clases desbalanceadas el accuracy es engañoso; macro-F1 penaliza el colapso a P2P. |
 | Entrenamiento transductivo (aristas de val/test presentes como estructura) | Todos los casos end-to-end | Las aristas de val/test siguen en el grafo durante el message passing (solo se oculta la etiqueta). Es el escenario real (la topología es observable; la relación no) pero debe explicitarse al reportar resultados. |
 
@@ -399,12 +445,11 @@ Resultados registrados en los outputs del notebook (test):
 
 ### 4.1 Requisitos de entorno
 
-* **SO**: Linux (desarrollado en Ubuntu, kernel 6.8). `1_ribs_extraction.py` usa `strftime('%s')`, que no es portable a Windows.
+* **SO**: Linux (desarrollado en Ubuntu, kernel 6.8).
 * **Python 3.10** (los notebooks usan el kernel `env310`, Python 3.10.12).
 * **CPU/GPU**: el código selecciona `cuda` si está disponible; los outputs guardados muestran ejecución en **CPU** (Caso 0 ≈ 44 min por modelo). Con GPU (CUDA 12.1) los tiempos bajan un orden de magnitud.
-* **RAM**: el grafo completo (80 k nodos, 807 k aristas, 72 features) cabe holgadamente en < 4 GB; los pasos pesados son `4_add_atributes.py` (NetworkX) y la deduplicación de AS_PATHs en `1_ribs_extraction.py` (`set` en memoria: un RIB de 24 h supera los 27 M de rutas según comentarios del notebook).
-* **libBGPStream** instalada en el sistema (dependencia nativa de `pybgpstream`).
-* Acceso a red para: BGPStream (RouteViews/RIS), `publicdata.caida.org` (PeeringDB dumps y `as-rel`), `ftp.lacnic.net`, `peeringdb.com/api`.
+* **RAM**: el grafo de 2026-09-16 (88 k nodos, 1,34 M aristas dirigidas, 85 features) cabe en pocos GB para los encoders GCN/SAGE. Los GAT full-batch con `hidden=256` se quedan sin memoria en la máquina de desarrollo (15 GB, sin GPU): para pruebas use dims pequeñas (`hidden=32`, `out=16`).
+* Acceso a red solo para descargar el `as-rel` de CAIDA (`publicdata.caida.org`). La construcción del grafo (BGPStream, PeeringDB) ocurre en `as-level-internet-graph`.
 
 ### 4.2 Instalación del entorno
 
@@ -430,10 +475,7 @@ pip install pyg_lib torch_scatter torch_sparse torch_cluster -f https://data.pyg
 pip install "pandas>=2.0" "numpy<3" networkx scikit-learn scipy matplotlib seaborn tqdm \
             gensim==4.4.0 requests pyyaml umap-learn jupyter ipykernel
 
-# 5. Solo para extraer RIBs (requiere libbgpstream en el sistema: https://bgpstream.caida.org/docs/install)
-pip install pybgpstream==2.0.4
-
-# 6. Registrar el kernel que esperan los notebooks
+# 5. Registrar el kernel que esperan los notebooks
 python -m ipykernel install --user --name env310 --display-name env310
 ```
 
@@ -458,85 +500,71 @@ gensim==4.4.0
 requests
 pyyaml
 umap-learn
-pybgpstream==2.0.4   # opcional
 jupyter
 ```
 
-> **Importante sobre rutas.** Todos los scripts y notebooks tienen rutas absolutas hard-coded a un disco externo. Los archivos de los grafos (`rib_*.txt`, `nodes_*.csv`, `edges_*.csv` y sus versiones `_enriched_tesis`) se leen y escriben en **`/media/vale/KINGSTON/as-level-internet-graph/grafos/`** (variables `data_path` / `output_dir` / `DATA_PATH` / `BASE`). El dataset ToR y los archivos CAIDA del enfoque por partes siguen en `/media/vale/KINGSTON/TESIS/` (`TESIS_PATH`, `PATH` en `create_tor_dataset.py`). Si su disco está en otra ruta, edite esas variables en el bloque `if __name__ == '__main__':` de cada script o en la celda de configuración del notebook. **No existen flags de línea de comandos** (ver §5).
+> **Importante sobre rutas.** Los notebooks tienen rutas absolutas a un disco externo. Todas se definen en su celda de configuración (celda 6 del end-to-end y celda 3 del por partes):
+> * `GRAFO_DIR`: carpeta del grafo de `as-level-internet-graph`, `/media/vale/KINGSTON/as-level-internet-graph/experimentos/experimento<N>/grafos/<año>/<mes>/<AAAAMMDDTHHMM>/`. **Para cambiar de grafo basta con cambiar esta variable.**
+> * `CAIDA_DIR`: carpeta con los `AAAAMM01.as-rel.txt.bz2`; hoy `/media/vale/KINGSTON/TESIS/data_2026/`.
+> * `RIBS_DIR` (solo por partes, BGP2Vec): RIBs en texto (`rib_*.txt`), que `as-level-internet-graph` no genera; hoy las de marzo en `/media/vale/KINGSTON/TESIS/data_2026/`.
+> * `TESIS_PATH`: el dataset ToR y el grafo externo 2022 del enfoque por partes siguen en `/media/vale/KINGSTON/TESIS/`.
 >
-> Ese directorio es además la salida del proyecto hermano [`as-level-internet-graph`](https://github.com/valesteban/as-level-internet-graph), que genera `grafos/<año>/<mes>/<fecha>/as_edges.csv` con columnas `as_a,as_b,weight`. Ese formato **no** es el que consume `GNN.load_dataset` (`nodes_*.csv` / `edges_*.csv` con `node_id`/`src_id`/`dst_id`); para usar uno de esos grafos hay que convertirlo primero al formato de `scripts/2_create_edges_from_ribs.py` y luego pasar por `scripts/4_add_atributes.py`.
+> La carpeta antigua `/media/vale/KINGSTON/as-level-internet-graph/grafos/` ya no existe (se borró el 2026-10-14). **No existen flags de línea de comandos** (ver §5).
 
 ### 4.3 Preparación de datos
 
-En lo que sigue `<DATA>` = `/media/vale/KINGSTON/as-level-internet-graph/grafos/` (valor actual en los scripts; edítelo si cambia).
-
-**Paso 1 — Extraer AS_PATHs de RIBs**
+**Paso 1: construir el grafo (en `as-level-internet-graph`).** Ver su README. Por ejemplo, un grafo del día 1 de mes, que coincide con el snapshot CAIDA:
 
 ```bash
-# Editar en scripts/1_ribs_extraction.py:
-#   start = "03/01/2026"                    # MM/DD/YYYY
-#   list_durations = [86400]                 # segundos; dejar solo la duración deseada
-#   data_path = "<DATA>/"
-python3 scripts/1_ribs_extraction.py
-# → <DATA>/rib_20260301_0000_to_20260302_0000.txt
+cd ../as-level-internet-graph
+python as_graph.py --date "2026-09-01 00:00" --jobs 4 --experimento nuevo --descripcion "día 1 de mes, para entrenar con CAIDA AS-Rel"
+python scripts/enriquecer_nodos.py --todos "$ASGRAPH_OUT_DIR"/experimentos/experimento<N>
+# → GRAFO_DIR/as_features.csv, GRAFO_DIR/gnn_edges.csv
 ```
 
-Parámetros de la función `ribs_download(start_date, duration, data_path)`: fecha `MM/DD/YYYY`, duración en segundos, carpeta de salida. Emite progreso cada `LOG_EVERY_N = 1_000_000` registros.
-
-**Paso 2 — Nodos y aristas**
+**Paso 2: descargar el archivo CAIDA del mes del grafo** (serial-1, publicado el día 1):
 
 ```bash
-# Editar en scripts/2_create_edges_from_ribs.py:
-#   list_ribs_files = ["rib_20260301_0000_to_20260302_0000.txt"]
-#   data_path = "<DATA>/"
-python3 scripts/2_create_edges_from_ribs.py
-# → nodes_rib_…csv, edges_rib_…csv, nodes_rib_…_pruned.csv, edges_rib_…_pruned.csv
+wget -P /media/vale/KINGSTON/TESIS/data_2026/ \
+     https://publicdata.caida.org/datasets/as-relationships/serial-1/20260901.as-rel.txt.bz2
 ```
 
-**Paso 3 (opcional) — Subgrafo por país**
+**Paso 3: etiquetar las aristas.** Los notebooks lo hacen solos en la celda de configuración si `gnn_edges_caida.csv` no existe. A mano:
 
-```bash
-# Editar en scripts/3_filter_by_country.py: data_path, country_code="CL", list_ribs_files
-# Descarga automáticamente delegated-lacnic-extended-latest si no existe (src/lacnic.py)
-python3 scripts/3_filter_by_country.py
-# → nodes_cl_rib_…csv, edges_cl_rib_…csv
+```python
+from pathlib import Path
+from modules.gnn import GNN
+
+GRAFO_DIR = Path("/media/vale/KINGSTON/as-level-internet-graph/experimentos/experimento7/grafos/2026/09/20260916T0800")
+CAIDA_DIR = Path("/media/vale/KINGSTON/TESIS/data_2026")
+
+resumen = GNN(debug=True).label_edges_from_caida(
+    GRAFO_DIR / "gnn_edges.csv",
+    GNN.caida_file_for_graph(GRAFO_DIR, CAIDA_DIR),   # → CAIDA_DIR/20260901.as-rel.txt.bz2
+    output_csv=GRAFO_DIR / "gnn_edges_caida.csv",     # + GRAFO_DIR/etiquetas_caida.json
+)
 ```
 
-Parámetros de `filter_country_topology(...)`: `country_code`, `include_ixp_participants`, `include_facility_asns`, `include_neighbors` (todos `True` por defecto en `__main__`). Las consultas a PeeringDB son paginadas (`limit=250`) y pueden tardar varios minutos.
+Para volver a etiquetar, por ejemplo con otro snapshot CAIDA, borre `gnn_edges_caida.csv` o llame al método con otro `caida_file`.
 
-**Paso 4 — Enriquecer nodos y etiquetar aristas**
+**Grafo antiguo de marzo 2026.** Los CSV `*_enriched_tesis.csv` (72 features, ya etiquetados) están en `/media/vale/KINGSTON/TESIS/data_2026/`. Para usarlos, descomente las líneas correspondientes en la celda de configuración del notebook end-to-end.
 
-Descargas previas (manuales):
+**Dataset ToR (solo enfoque por partes).** Se crea por grafo:
 
-```bash
-# CAIDA AS Relationships (serial-1), mismo mes del RIB
-wget -P <DATA>/ https://publicdata.caida.org/datasets/as-relationships/serial-1/20260301.as-rel.txt.bz2
-# El dump de PeeringDB se descarga solo si falta:
-#   https://publicdata.caida.org/datasets/peeringdb/2026/03/peeringdb_2_dump_2026_03_01.json
+```python
+GNN().build_tor_dataset(GRAFO_DIR / "gnn_edges_caida.csv", GRAFO_DIR / "results/EnfoquePorPartes/ToR", seed=42)
 ```
 
-```bash
-# Editar en scripts/4_add_atributes.py (__main__):
-#   output_dir = "<DATA>/"
-#   nodes_csv  = output_dir + "nodes_rib_20260301_0000_to_20260302_0000.csv"   # o la versión _pruned / _cl_
-#   edges_csv  = output_dir + "edges_rib_20260301_0000_to_20260302_0000.csv"
-#   year, month = "2026", "03"
-#   caida_relationships_file = output_dir + "20260301.as-rel.txt.bz2"
-python3 scripts/4_add_atributes.py
-# → nodes_rib_…_enriched_tesis.csv, edges_rib_…_enriched_tesis.csv
+`scripts/correr_experimento.py` lo hace solo (§4.7). El dataset antiguo de marzo sigue en `TESIS/data_2026/ToR_data/tor_data_marzo/`.
+
+**Prueba de humo** (desde la raíz del repo):
+
+```python
+gnn = GNN(); gnn.load_dataset(str(GRAFO_DIR / "as_features.csv"), str(GRAFO_DIR / "gnn_edges_caida.csv"))
+# → 87 796 nodos, 1 336 852 aristas, 85 features
+gnn.split_edges_classification(0.7, 0.15, seed=42)
+# → train 691 574 / val 148 194 / test 148 196
 ```
-
-Funciones públicas: `add_atributes_nodes(nodes_csv, edges_csv, year, month, output_dir)` y `add_atributes_edges(edges_csv, caida_rel_path=None, output_dir=None)` (si no encuentra el archivo CAIDA asigna `-1` a todo).
-
-**Paso 5 (solo enfoque por partes) — Dataset ToR**
-
-```bash
-# Editar PATH, DATA, ToR_CSV y MES en scripts/create_tor_dataset.py; crear <DATA>/ToR_data/tor_data_marzo/
-python3 scripts/create_tor_dataset.py
-# → x_training.npy, x_test.npy, y_training.npy, y_test.npy  (TEST_SIZE = 0.2)
-```
-
-Los dos CSV `*_enriched_tesis.csv` incluidos en `data/` son el resultado de los pasos 1–4 para el RIB de 24 h del 1 de marzo de 2026 y permiten ejecutar los notebooks sin rehacer el pipeline (ajustando `data_path`).
 
 ### 4.4 Entrenamiento y evaluación
 
@@ -551,18 +579,23 @@ jupyter lab   # o jupyter notebook
 
 1. Celda 2: imports (`%autoreload` recarga `modules/` al editar).
 2. Celda 4: funciones de ploteo.
-3. Celda 6: **editar `data_path`**, `nodes_file`, `edges_file`.
+3. Celda 6: **editar `GRAFO_DIR`** (y `CAIDA_DIR` si cambia). Esta celda:
+   * define `nodes_file`, `edges_file`, `RUN_TAG` (`experimento<N>_<AAAAMMDDTHHMM>`) y `RESULTS_DIR = GRAFO_DIR/results/end_to_end`;
+   * define `SEED = 42` (cámbiela para probar otra semilla) y llama a `set_seed(SEED)`;
+   * etiqueta con CAIDA si `gnn_edges_caida.csv` no existe.
 4. Celda 7: `GLOBAL_CONFIG` (hiperparámetros, ver §3.3.1). Celda 8: `focal_loss`.
 5. Elegir un caso y ejecutar sus celdas en orden:
    * Caso 0 (celdas 11–17): carga + split → `models = {...}` → entrenamiento MLP. Para el decoder Bilinear descomente la celda 15.
    * Caso 1 (19–26), Caso 2 (28–31), Caso 3 (33–36), Caso 4 (38–39), comparación completa (43).
    * Cada celda de entrenamiento itera sobre el dict `models` (`'GraphSAGE': GraphSAGE3L`, …); para cambiar arquitectura o profundidad edite ese dict (las variantes 2L están comentadas).
-6. Salidas en pantalla: log cada 10 épocas, tiempo total, `classification_report`, matrices de confusión, baseline y curvas. `output_root = ./results/end_to_end` se crea pero en la versión actual no se escriben archivos.
+6. Salidas:
+   * en pantalla: log cada 10 épocas, tiempo total, `classification_report`, matrices de confusión, baseline y curvas;
+   * en disco: cada modelo guarda métricas, pesos e historial en `RESULTS_DIR/<caso>/<modelo>_<decoder>_seed<SEED>_<config_id>/` y una fila en `RESULTS_DIR/resumen.csv` (§3.3.0). El Caso 1 Bilinear (celda 24) además guarda curvas PNG y predicciones por arista en `RESULTS_DIR/plots/` y `RESULTS_DIR/predictions/`.
 
 **Por partes** (`AS_relationship_inference_por_partes.ipynb`):
 
-1. Celdas 1–7: imports, rutas (`data_path`, `nodes_file`, `edges_file`, `ribs_file`), helpers, `GLOBAL_CONFIG`.
-2. Etapa A: ejecutar el caso deseado (Caso 0 → celdas 9–14; Caso 3 → 29–33; Caso 4 → 35–41; DeepWalk → 44–49; BGP2Vec → 51–60). Cada uno guarda embeddings/modelos en `<data_path>/results/EnfoquePorPartes/Caso{N}/`.
+1. Celdas 1–7: imports; rutas en la celda 3 (**editar `GRAFO_DIR`**; de ella salen `nodes_file`, `edges_file` y `data_path = GRAFO_DIR/`; además `CAIDA_DIR`, `RIBS_DIR`, `ribs_file`); helpers; `GLOBAL_CONFIG`.
+2. Etapa A: ejecutar el caso deseado (Caso 0 → celdas 9–14; Caso 3 → 29–33; Caso 4 → 35–41; DeepWalk → 44–49; BGP2Vec → 51–60). Cada uno guarda embeddings/modelos en `GRAFO_DIR/results/EnfoquePorPartes/Caso{N}/`, en la carpeta del grafo. Los embeddings antiguos del grafo de marzo están en `/media/vale/KINGSTON/TESIS/data_2026/results/` y no son compatibles con otro grafo (cambian los nodos y la dimensión).
 3. Etapa B (celdas 62–94): en la celda 67 descomente la ruta del embedding a usar y fije `attr`/`CASO`; después ejecute carga del ToR (73), mapeo y features (75–76), split y pesos (78), modelo (80), entrenamiento con batches (90) y evaluación (92–94).
 
 ### 4.5 Inferencia con un modelo entrenado
@@ -575,9 +608,9 @@ from modules.gnn import GNN
 from modules.gnn_models import GraphSAGE3L
 
 gnn = GNN(debug=False)
-gnn.load_dataset("data/nodes_rib_…_enriched_tesis.csv", "data/edges_rib_…_enriched_tesis.csv")
+gnn.load_dataset(str(GRAFO_DIR / "as_features.csv"), str(GRAFO_DIR / "gnn_edges_caida.csv"))
 g = gnn.graph
-in_feats = g.x.shape[1]                             # 72
+in_feats = g.x.shape[1]                             # 85
 
 model = GraphSAGE3L(in_feats, 256, 128, out_feats_mlp=3, edge_dim=1, drop=0.3)
 model.load_state_dict(torch.load("ruta/al/modelo.pth", map_location="cpu"))
@@ -589,23 +622,87 @@ with torch.no_grad():
     pred = logits.argmax(1)                         # 0=P2P, 1=C2P, 2=P2C
 
 # Traducir a ASNs
-id_to_asn = {int(r["node_id"]): int(r["asn"]) for r in csv.DictReader(open("data/nodes_rib_…_enriched_tesis.csv"))}
+id_to_asn = {int(r["node_id"]): int(r["asn"]) for r in csv.DictReader(open(GRAFO_DIR / "as_features.csv"))}
 u, v = g.edge_index
 for eid in range(5):
     print(id_to_asn[int(u[eid])], "->", id_to_asn[int(v[eid])], ["P2P","C2P","P2C"][int(pred[eid])])
 ```
 
-Las aristas con `edge_label == -1` (≈74 k en el CSV, ~10 %) son exactamente las que el modelo puede inferir sin etiqueta de referencia. Para pares de AS **no** presentes en el grafo, use el enfoque por partes (`build_edge_features` + `EdgeClassifierANN`) o `_fill_labels_from_caida_stream_fast`-style para agregar nodos con `feat=0`.
+Las aristas con `edge_label == -1` (174 444 enlaces, ≈26 %, en 2026-09-16) son exactamente las que el modelo puede inferir sin etiqueta de referencia. Para pares de AS **no** presentes en el grafo, use el enfoque por partes (`build_edge_features` + `EdgeClassifierANN`) o `_fill_labels_from_caida_stream_fast`-style para agregar nodos con `feat=0`.
 
 ### 4.6 Artefactos generados
 
 | Ruta | Contenido |
 |---|---|
-| `<DATA>/rib_*.txt`, `nodes_*.csv`, `edges_*.csv` | Pipeline de datos |
-| `<DATA>/peeringdb_2_dump_YYYY_MM_01.json`, `*.as-rel.txt.bz2`, `delegated-lacnic-extended-latest` | Fuentes externas descargadas |
-| `<DATA>/ToR_data/tor_data_<mes>/*.npy` | Dataset ToR |
-| `<DATA>/results/EnfoquePorPartes/Caso{0..5}/` | `embeddings_*.pt`, `model_*.pth`, `bgp2vec.word2vec`, `roc_*.png`, `confusion_matrix.png`, `ann_con_batches_*.pth` |
+| `GRAFO_DIR/as_features.csv`, `gnn_edges.csv` | Grafo (generado por `as-level-internet-graph`) |
+| `GRAFO_DIR/gnn_edges_caida.csv`, `etiquetas_caida.json` | Aristas etiquetadas y resumen (`GNN.label_edges_from_caida`) |
+| `CAIDA_DIR/AAAAMM01.as-rel.txt.bz2` | CAIDA AS-Relationships (descarga manual) |
+| `/media/vale/KINGSTON/TESIS/data_2026/` | Grafo antiguo de marzo (`*_enriched_tesis.csv`), `rib_*.txt`, dataset ToR (`*.npy`) |
+| `GRAFO_DIR/results/end_to_end/<caso>/<modelo>_<decoder>_seed<SEED>_<config_id>/` | `metrics.json`, `model.pth`, `history.csv` de cada modelo end-to-end (`save_run`) |
+| `GRAFO_DIR/results/end_to_end/resumen.csv` | Una fila por corrida: fecha, caso, modelo, decoder, semilla, accuracy, macro-F1, tiempo_s, tiempo_total_s, épocas, carpeta |
+| `GRAFO_DIR/results/end_to_end/plots/`, `predictions/` | Curvas y predicciones del Caso 1 Bilinear (celda 24) |
+| `GRAFO_DIR/results/EnfoquePorPartes/ToR/` | Dataset ToR del grafo (`build_tor_dataset`) + `tor_resumen.json` |
+| `GRAFO_DIR/results/EnfoquePorPartes/clasificador_ann/`, `resumen.csv` | Métricas del clasificador ANN por embedding (`save_run`, celda 92) |
+| `GRAFO_DIR/results/ejecucion/`, `<experimento>/resultados_gnn/` | Ejecución por lotes (§4.7) |
+| `GRAFO_DIR/results/EnfoquePorPartes/Caso{0..5}/` | `embeddings_*.pt`, `model_*.pth`, `bgp2vec.word2vec`, `roc_*.png`, `confusion_matrix.png`, `ann_con_batches_*.pth` |
 | `notebooks/results/*.pdf` | Figuras de análisis |
+| `notebooks/resultados_experimentos.ipynb` | Tablas de accuracy, F1, métricas por clase (P2P/C2P/P2C) y tiempos de todos los modelos de ambos enfoques; lee los `metrics.json` de un experimento (parámetros `EXPERIMENTO`, `GRAFOS`, `RAPIDO`, `SEED`) y puede exportar las tablas a `<experimento>/resultados_gnn/tablas/` |
+
+### 4.7 Correr un experimento completo (`scripts/correr_experimento.py`)
+
+El script ejecuta los dos notebooks sobre **todos los grafos de un experimento** de `as-level-internet-graph`, sin abrir Jupyter:
+
+```bash
+cd gnn-as-relationships
+EXP=/media/vale/KINGSTON/as-level-internet-graph/experimentos/experimento7
+
+env310/bin/python scripts/correr_experimento.py $EXP                    # todo, en todos los grafos
+env310/bin/python scripts/correr_experimento.py $EXP --rapido           # prueba de humo (minutos por grafo)
+env310/bin/python scripts/correr_experimento.py $EXP --grafos 2025 2026 --notebooks end_to_end --casos-e2e caso0 caso1
+env310/bin/python scripts/correr_experimento.py $EXP --reanudar         # retoma: salta los casos terminados
+env310/bin/python scripts/correr_experimento.py $EXP --solo-preparar    # solo CAIDA + etiquetado + dataset ToR
+env310/bin/python scripts/correr_experimento.py $EXP --config '{"epochs": 100, "hidden_dim": 64}'
+```
+
+**Qué hace con cada grafo** (`grafos/<año>/<mes>/<AAAAMMDDTHHMM>/`):
+
+1. **Preparación.**
+   * Omite el grafo si no tiene `as_features.csv` y `gnn_edges.csv`. En experimento7, solo 2018–2026 están enriquecidos.
+   * Descarga el CAIDA del mes a `--caida-dir` (por defecto `/media/vale/KINGSTON/TESIS/data_2026`) si falta. Con `--sin-descarga`, en cambio, omite el grafo.
+   * Etiqueta las aristas (`gnn_edges_caida.csv`).
+   * Crea el **dataset ToR del grafo** con `GNN.build_tor_dataset`, en `results/EnfoquePorPartes/ToR/`:
+     * usa los enlaces etiquetados del propio grafo, así que las etiquetas son del mismo mes;
+     * hace un split 80/20 por enlace no dirigido, estratificado y con `SEED`, de modo que no hay fuga entre direcciones;
+     * cada enlace aporta las dos direcciones.
+2. **End-to-end.** Ejecuta `caso0`, `caso1`, `caso2`, `caso3`, `caso4` y `comparacion`.
+3. **Por partes.**
+   * Ejecuta `caso0`, `caso1`, `caso2`, `caso3`, `caso4`, `deepwalk` y `bgp2vec`.
+   * Después ejecuta `clasificador` **una vez por cada embedding** generado en ese grafo: Casos 0, 1, 3 y 4, DeepWalk y BGP2Vec. Excluye el Caso 2, que es del grafo externo 2022 y cuyos nodos no corresponden.
+   * El Caso 2 y BGP2Vec no dependen del grafo, pero se ejecutan igual si están seleccionados.
+
+**Cómo ejecuta.**
+* Cada caso corre en un **kernel nuevo**, solo con las celdas cuyas etiquetas de metadatos (`metadata.tags`) son `config` o el nombre del caso. Para cambiar qué celdas forman un caso, edite esas etiquetas en Jupyter (*View → Cell Toolbar → Tags*).
+* Los parámetros llegan a la celda de configuración por variables de entorno: `GRAFO_DIR`, `CAIDA_DIR`, `SEED`, `RESULTS_ROOT`, `GNN_CONFIG`, `TOR_PATH` y `EMBEDDINGS_PATH`. Sin ellas, los notebooks usan sus valores por defecto, así que siguen funcionando igual en Jupyter.
+* `GNN_CONFIG` (`--config`) se mezcla con `GLOBAL_CONFIG`. Además acepta claves para épocas que estaban fijas: `epochs_muestreo` (Casos 2–3 end-to-end, 15), `deepwalk_epochs` (50), `ann_epochs` (200), `bgp2vec_max_routes` (5 000 000) y `bgp2vec_count_routes` (True).
+* Un caso que falla, por ejemplo por un error o porque el kernel muere sin memoria, queda registrado y el script **sigue con el siguiente**.
+* `--rapido` usa hiperparámetros mínimos y escribe todo en `GRAFO_DIR/prueba_rapida/` y `<experimento>/resultados_gnn_prueba/`, sin tocar los resultados reales.
+
+**Salidas.**
+
+| Ruta | Contenido |
+|---|---|
+| `GRAFO_DIR/results/end_to_end/…`, `GRAFO_DIR/results/EnfoquePorPartes/…` | Lo que guarda cada notebook (§4.6) |
+| `GRAFO_DIR/results/EnfoquePorPartes/clasificador_ann/<embedding>_ann_seed<SEED>_<config_id>/` | Métricas, pesos e historial del clasificador ANN de cada embedding (`save_run`) |
+| `GRAFO_DIR/results/ejecucion/<notebook>_<caso>[_<embedding>].ipynb` | Notebook ejecutado de cada caso, con sus salidas y el error si falló |
+| `GRAFO_DIR/results/ejecucion/*.ok` | Marcador de caso terminado (lo usa `--reanudar`) |
+| `<experimento>/resultados_gnn/ejecucion_<fecha>.csv` | Estado (`ok` / `error` / `omitido` / `ya hecho`), duración y error de cada caso |
+| `<experimento>/resultados_gnn/metricas.csv` | Todas las métricas de test de todos los grafos (una fila por `metrics.json`, con `tiempo_s`, `tiempo_total_s` y `epocas`) para comparar entre años |
+| `<embedding>.tiempo.json` (junto a cada `.pt` / `.word2vec`) | Duración del entrenamiento del modelo que generó el embedding (`GNN.save_tiempo_embedding`) |
+
+**Advertencias.**
+* Con la configuración por defecto de los notebooks (500 épocas, `hidden=256`), un grafo completo tarda **muchas horas** en CPU. Los GAT full-batch pueden quedarse sin memoria en una máquina de 15 GB; en ese caso el caso se registra como `error` y la corrida continúa.
+* Use `--grafos` y `--casos-*` para acotar, y `--reanudar` para retomar.
+* El Caso 2 por partes necesita `InternetGNNData2022/caida/caida_pyg.pt`, que hoy no existe (hay que convertir `caida.bin` desde un entorno con DGL; §3.3.2). Mientras tanto, ese caso termina en `error`.
 
 ---
 
@@ -626,14 +723,18 @@ Las aristas con `edge_label == -1` (≈74 k en el CSV, ~10 %) son exactamente la
 | 7 | `modules/graph.py:371-380` | En `label_edges_caida`, tras asignar `label = 2` para `(src→dst)`, la comprobación `label == -1` para `(dst→src)` ya es falsa. | **Ambas direcciones quedan P2C**; el commit "Corregir etiquetas P2C/C2P invertidas" no lo resolvió. (Pipeline legado.) |
 | 8 | `modules/graph.py:430-471` | `only_degree_features_nodes` contiene código muerto tras `f.close()` que escribe en el archivo cerrado. | `ValueError: I/O operation on closed file`. |
 | 9 | `modules/graph.py:190` | `create_graph_from_caida` ignora `filename_out` y concatena `self.data_path + "edges.csv"` sin `os.path.join`. | Ruta incorrecta si `data_path` no termina en `/`. |
-| 10 | `scripts/4_add_atributes.py` (`__main__`) | *(Corregido)* `caida_relationships_file` (2026) se sobrescribía con la ruta CAIDA de 2024 antes de usarse y `peeringdb_file` se definía sin usarse. | Hasta la corrección, el etiquetado del RIB 2026 usaba relaciones CAIDA de marzo 2024; los CSV de `data/` pueden haberse generado así. |
-| 11 | `scripts/2_create_edges_from_ribs.py:92` | `sorted(dict_nodes.keys())` ordena **strings**, no enteros (`"10" < "9"`). | `node_id` no sigue orden numérico de ASN (inofensivo, pero difiere de `3_filter_by_country.py`, que sí usa `key=int`). |
-| 12 | `scripts/1_ribs_extraction.py` | `argparse` importado y no usado; `count_records` se incrementa antes del chequeo `rec is None`; `strftime('%s')` no portable. | Configuración no parametrizable; conteo desviado en 1. |
+| 10 | `scripts/4_add_atributes.py` (`__main__`) | *(Script eliminado en `4fcb754`)* *(Corregido)* `caida_relationships_file` (2026) se sobrescribía con la ruta CAIDA de 2024 antes de usarse y `peeringdb_file` se definía sin usarse. | Hasta la corrección, el etiquetado del RIB 2026 usaba relaciones CAIDA de marzo 2024; los CSV de `data/` pueden haberse generado así. |
+| 11 | `scripts/2_create_edges_from_ribs.py:92` *(eliminado en `4fcb754`)* | `sorted(dict_nodes.keys())` ordena **strings**, no enteros (`"10" < "9"`). | `node_id` no sigue orden numérico de ASN (inofensivo, pero difiere de `3_filter_by_country.py`, que sí usa `key=int`). |
+| 12 | `scripts/1_ribs_extraction.py` *(eliminado en `4fcb754`)* | `argparse` importado y no usado; `count_records` se incrementa antes del chequeo `rec is None`; `strftime('%s')` no portable. | Configuración no parametrizable; conteo desviado en 1. |
 | 13 | `modules/bgp2vec.py:86-90` | `asn2idx`/`idx2asn` usan la API de gensim 3 (`wv.vocab`, `wv.index2word`). | Rotos con gensim 4.x (instalado 4.4.0). |
 | 14 | `modules/bgp2vec/bgp2vec.py:50` | `total_examples=len(self.routes)` falla con iteradores (`RIBCorpus`, `islice`). | Copia obsoleta; debe eliminarse. |
 | 15 | `.gitignore` | Ignora `*.md`, `*.csv`, `*.json`, `*.txt`, `*.png`; `README.md` y `data/*.csv` fueron añadidos a la fuerza. | Cualquier documentación o dato nuevo queda invisible para git (este archivo requiere la excepción `!DOCUMENTATION.md`). |
 | 16 | `src/__pycache__/utils.py`, `**/__pycache__/*.pyc`, `src/graph_builder.py` | Fuente dentro de `__pycache__`, bytecode versionado, módulo vacío. | Ruido en el repo; riesgo de importar la versión equivocada de `utils`. |
 | 17 | `README.md` | *(Corregido)* Citaba `3_export_to_dgl_graph.py` (no existe) y omitía `4_add_atributes.py`. | Onboarding incorrecto hasta la corrección. |
+| 18 | `notebooks/*.ipynb` (análisis) | `analisis_grafo_internet`, `attribute_inspection`, `tsne_embeddings`, `AS_embeddings_visualization`, `peeringdb_coverage_bias`, `validar_normalizacion_atributos`, `analisis_ribs_recolectadas` y `analysis_as_topology` siguen apuntando a la carpeta borrada `as-level-internet-graph/grafos/`. Salvo `analysis_as_topology` (lee `as_edges.csv`, así que solo hay que cambiarle la ruta), además leen el formato antiguo (`nodes_*/edges_*_enriched_tesis.csv`, `rib_*.txt`). | No corren hasta migrarlos a `experimentos/experimento<N>/…` y al formato nuevo. Solo se migraron los dos notebooks de entrenamiento. |
+| 19 | Notebook end-to-end, celdas de entrenamiento | *(Corregido)* El "mejor modelo" se guardaba con `best_w = model.state_dict()` (o `{k: v.cpu() …}` en CPU), que no copia: apunta a los pesos vivos. | Hasta la corrección, test se evaluaba con los pesos de la **última** época, no con los de la mejor en validación. Las cifras guardadas en los notebooks están afectadas. Ahora se copia con `.detach().clone()`. |
+| 20 | `AS_relationship_inference_por_partes.ipynb`, celda 93 | *(Corregido)* `save_dir` concatenaba `results/EnfoquePorPartes/{CASO}/` tres veces. | `savefig` fallaba por una carpeta inexistente. Ahora se guarda `CasoN/confusion_matrix_<embedding>.png`. |
+| 21 | `AS_relationship_inference_end_to_end.ipynb`, celda 24 (Caso 1 Bilinear) | *(Corregido)* El bloque de diagnóstico del final, fuera del bucle, usaba `hist`, `model_f1_macro` y `decodeMLP`, que vienen del Caso 0. | Solo funcionaba si el Caso 0 se había corrido antes en la misma sesión y fallaba con `NameError` al ejecutar el caso aislado (`scripts/correr_experimento.py`). Ahora usa `history`, `f1_macro` y `decodeBilinear` de la propia celda. |
 
 **Problemas metodológicos**
 
@@ -641,14 +742,16 @@ Las aristas con `edge_label == -1` (≈74 k en el CSV, ~10 %) son exactamente la
 * Los casos con muestreo (2 y 3) entrenan **15 épocas fijas** frente a 500 con paciencia 120 en full-batch; la comparación entre paradigmas no es equitativa. Con `batch_size=1024` y `num_parts=1000`, ClusterGCN procesa **todos los clusters en un solo batch** por época (equivale casi a full-batch con aristas inter-cluster eliminadas).
 * `BilinearPredictor.W` se inicializa con `torch.randn` sin escalado (`1/√F`), lo que produce logits de gran magnitud al inicio (el `grad_clip=2.0` lo mitiga).
 * La celda de "Comparación completa" (12 combinaciones) quedó interrumpida; no hay tabla final de resultados.
-* El vocabulario de BGP2Vec proviene de un RIB de 12 h distinto del grafo (24 h), y `epochs=1`.
+* El vocabulario de BGP2Vec proviene de un RIB de 12 h del 1 de marzo de 2026 (`RIBS_DIR`), distinto del grafo en uso; `as-level-internet-graph` no genera RIBs en texto. Además, `epochs=1`.
+* **Cobertura CAIDA parcial.** Con el grafo 2026-09-16 y CAIDA `20260901`, el 26 % de los enlaces (174 444) queda sin etiqueta (`-1`) y fuera de los splits de clasificación. Además, el grafo es del día 16 y el snapshot CAIDA del día 1. Para que coincidan, construya el grafo el día 1 del mes (§4.3).
+* Las cifras de la tabla de §3.3.1 (72 features, tiempos, métricas) corresponden a los outputs guardados con el grafo antiguo de marzo. Con los grafos nuevos hay que volver a correr los casos.
 * Entrenamiento transductivo: aristas de val/test participan en el message passing (ver §3.4). Es defendible, pero debe declararse y, idealmente, contrastarse con un escenario inductivo (`remove_edges` de test antes de `encode`).
 
 **Calidad general**
 
 * Lógica de entrenamiento duplicada ~8 veces entre celdas (solo cambian decoder/pérdida); `_train_one` de la celda 43 ya es el esqueleto correcto para factorizarla.
 * Seis clases de encoder casi idénticas; ausencia de tipado en `modules/`, docstrings parciales y mezcla español/inglés.
-* Configuración por edición de código; salidas por `print`; sin semilla global unificada (`torch_geometric.seed_everything` solo en link prediction; `torch.backends.cudnn.deterministic` nunca se fija).
+* Configuración por edición de código; salidas mayormente por `print`. La semilla ya está unificada (`SEED` + `set_seed`, §3.3.0), pero en GPU la reproducibilidad no es exacta.
 * Cero tests automatizados.
 
 ### 5.2 Oportunidades de optimización
@@ -681,7 +784,7 @@ Las aristas con `edge_label == -1` (≈74 k en el CSV, ~10 %) son exactamente la
 3. **Configuración declarativa**: `argparse` en los scripts (`--data-path`, `--rib`, `--year`, `--month`, `--caida`, `--country`) y un `config.yaml`/Hydra para hiperparámetros; eliminar rutas absolutas y usar `pathlib`.
 4. **Tipado estático** (`mypy --strict` progresivo) y `ruff`/`black` con `pre-commit`; añadir `from __future__ import annotations` donde se usa `int | None`.
 5. **Logging** (`logging` con niveles y `RichHandler`/archivo) en lugar de `print`; registrar métricas por época en CSV/TensorBoard o MLflow y persistir `GLOBAL_CONFIG` junto a cada modelo.
-6. **Reproducibilidad**: función `set_seed(seed)` que fije `random`, `numpy`, `torch`, `torch.cuda`, `torch_geometric.seed_everything` y `cudnn.deterministic`; guardar los `eids` de cada split a disco.
+6. **Reproducibilidad**: *(hecho: `modules/experiment.py :: set_seed`)*. Pendiente: guardar los `eids` de cada split a disco.
 7. **Estructura de paquete**: `pyproject.toml` con `packages = ["modules", "src"]`, `requirements.txt` fijado, borrar `__pycache__` del índice (`git rm -r --cached '**/__pycache__'`), eliminar `src/graph_builder.py` y `modules/bgp2vec/`, o moverlos a `legacy/`.
 8. **Refactor de modelos**: una clase `GNNEncoder(conv_type, num_layers, ...)` que construya la pila con `nn.ModuleList`, más decoders independientes; `BilinearPredictor` con inicialización `xavier_uniform_` escalada.
 9. **Documentar el protocolo de evaluación** (transductivo, balanceo, semilla, épocas) en el README y en los reportes de resultados.
