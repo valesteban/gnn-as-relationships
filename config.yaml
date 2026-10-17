@@ -1,0 +1,150 @@
+# Configuración central de gnn-as-relationships.
+#
+# Lo leen directamente (yaml.safe_load) los notebooks y scripts/correr_experimento.py.
+# Para cambiar de equipo, de disco o de grafo, edite SOLO este archivo.
+#
+# Variables de entorno con prioridad sobre este archivo (las fija scripts/correr_experimento.py
+# para cada grafo): GRAFO_DIR, CAIDA_DIR, SEED, RESULTS_ROOT y GNN_CONFIG (JSON que sobrescribe
+# claves de global_config_*). CONFIG_FILE: usar otro YAML en vez de este.
+# Nota PyYAML: escriba los decimales con punto (0.0005); "5e-4" se leería como texto.
+
+# ---------------------------------------------------------------------------
+# CORRIDA: nombre del experimento y carpeta donde quedan sus salidas
+# ---------------------------------------------------------------------------
+experimento:
+  # Nombre de la corrida: cambie el nombre para no mezclar resultados de corridas distintas
+  nombre: e2e_gpu_completo_02
+  # Salidas: <salida>/<nombre>/end_to_end/ (end-to-end) y
+  #          <salida>/<nombre>/results/EnfoquePorPartes/ (por partes).
+  # null = junto al grafo (<grafo_dir>/results/<nombre>/...).
+  # Si scripts/correr_experimento.py fija RESULTS_ROOT, se usa <RESULTS_ROOT>/results/... como antes.
+  salida: F:/TESIS/resultados_gnn
+
+rutas:
+  # Grafo de as-level-internet-graph:
+  # experimentos/experimento<N>/grafos/<año>/<mes>/<AAAAMMDDTHHMM>/
+  # Para cambiar de grafo basta con cambiar esta ruta.
+  grafo_dir: F:/as-level-internet-graph/experimentos/experimento7/grafos/2026/09/20260916T0800
+
+  # Disco con CAIDA, RIBs, dataset ToR y grafo 2022
+  tesis_path: F:/TESIS/
+
+  # Snapshots CAIDA AS-Relationships (AAAAMM01.as-rel.txt.bz2); también es el
+  # --caida-dir por defecto de scripts/correr_experimento.py
+  caida_dir: F:/TESIS/data_2026
+
+  # RIBs en texto para BGP2Vec (Caso 5 del por partes); as-level-internet-graph no las genera
+  ribs_dir: F:/TESIS/data_2026/
+  rib_file: rib_20260301_0000_to_20260302_0000.txt           # celda de configuración
+  rib_file_bgp2vec: rib_20260301_0000_to_20260301_1200.txt   # entrenamiento de BGP2Vec
+
+  # Grafo externo 2022 con atributos del paper (formato DGL). Los notebooks leen la copia
+  # convertida caida_pyg.pt que debe estar junto a este archivo.
+  internetgraph_file: F:/TESIS/InternetGNNData2022/caida/caida.bin
+
+  # Dataset ToR antiguo (marzo 2026): se usa si el grafo no tiene el suyo
+  tor_data_dir: F:/TESIS/data_2026/ToR_data/tor_data_marzo/
+  mes: "marzo"
+  ano: "2026"
+
+  # --- Notebooks de análisis (notebooks/) ---
+  # Salidas de as-level-internet-graph (todos los experimentos) y experimento que resume
+  # notebooks/resultados_experimentos.ipynb
+  as_graph_dir: F:/as-level-internet-graph
+  experimento_dir: F:/as-level-internet-graph/experimentos/experimento7
+  # Grafo antiguo de marzo 2026 (reemplaza a la carpeta borrada as-level-internet-graph/grafos/):
+  # CSV *_enriched_tesis, results/EnfoquePorPartes/Caso*/ y results/viz_embeddings/
+  grafo_antiguo_dir: F:/TESIS/data_2026
+  grafo_antiguo_nodes: nodes_rib_20260301_0000_to_20260302_0000_enriched_tesis.csv
+  grafo_antiguo_edges: edges_rib_20260301_0000_to_20260302_0000_enriched_tesis.csv
+
+comunes:
+  seed: 42  # splits, pesos iniciales, dropout, caminatas y orden de mini-batches
+  class_names: [P2P, C2P, P2C]
+
+# ---------------------------------------------------------------------------
+# ENFOQUES END TO END: 
+# ---------------------------------------------------------------------------
+global_config_endtoend:
+  lr: 0.001
+  hidden_dim: 256
+  out_dim: 128
+  epochs: 500
+  patience: 120
+  weight_decay: 0.0005
+  dropout: 0.3
+  label_smooth: 0.05
+  grad_clip: 2.0
+  num_heads: 2
+  # GAT full-batch (Casos 0, 1, 4 y comparación): con hidden 256 / out 128 necesita ~11-13 GB
+  # y la GPU tiene 8 GB, así que GAT usa sus propias dimensiones (GCN/GraphSAGE siguen con
+  # hidden_dim/out_dim). GAT con muestreo (Caso 2) usa hidden_dim/out_dim.
+  gat_hidden_dim: 64
+  gat_out_dim: 32
+  batch_size: 1024
+  num_neighbors: 15   # GraphSAGE/GAT con muestreo
+  focal_gamma: 2.0    # focal loss
+  # split_edges_classification: train_size + val_size < 1.0 (el resto es test)
+  split: {train_size: 0.7,
+          val_size: 0.15,
+          balance_mode: proportional}
+  
+  # CASO 2: Random Neighbour Sampling
+  n_neighbors: 15
+  batch_size_caso2: 1024
+
+  # CASO 3: ClusterGCN
+  num_parts: 1000
+  batch_size_caso3: 1024
+
+  # CASO 4: features aleatorias
+  random_features: {dim: 64, 
+                    std: 0.05, 
+                    mode: uniform}
+
+# ---------------------------------------------------------------------------
+# ENFOQUES POR PARTES: 
+# ---------------------------------------------------------------------------
+global_config_por_partes:
+  lr: 0.0005
+  hidden_dim: 256
+  out_dim: 128
+  dropout: 0.3
+  epochs: 500
+  patience: 80
+  weight_decay: 0.0005
+  label_smooth: 0.05  # evita que el modelo sea "demasiado seguro" de clases erróneas
+  # Opcionales (los notebooks usan estos valores por defecto):
+  # deepwalk_epochs: 50
+  # bgp2vec_max_routes: 5000000
+  # bgp2vec_count_routes: true
+  # ann_epochs: 200
+
+  split: {train_size: 0.8, 
+          val_size: 0.2, 
+          balance_mode: proportional}
+
+  # DeepWalk (Node2Vec con p = q = 1)
+  deepwalk:
+    embedding_dim: 32
+    walk_length: 40
+    context_size: 2
+    walks_per_node: 1
+    p: 1.0
+    q: 1.0
+    num_negative_samples: 5
+    batch_size: 128
+    lr: 0.01
+
+  # BGP2Vec
+  bgp2vec_epochs: 1
+  bgp2vec_test_limit: 27000000   # cantidad de rutas
+
+  # Clasificador MLP
+  MLP:
+    hidden: 256
+    dropout: 0.3
+    lr: 0.001
+    patience: 50
+    batch: 512
+    val_size: 0.2

@@ -56,18 +56,23 @@ NOTEBOOKS = {
     "end_to_end": REPO / "AS_relationship_inference_end_to_end.ipynb",
     "por_partes": REPO / "AS_relationship_inference_por_partes.ipynb",
 }
+
 CASOS_E2E = ["caso0", "caso1", "caso2", "caso3", "caso4", "comparacion"]
 CASOS_PARTES = ["caso0", "caso1", "caso2", "caso3", "caso4", "deepwalk", "bgp2vec", "clasificador"]
 
 CAIDA_URL = "https://publicdata.caida.org/datasets/as-relationships/serial-1/{nombre}"
-CAIDA_DIR_DEFECTO = "/media/vale/KINGSTON/TESIS/data_2026"
+import yaml  # noqa: E402
+
+# --caida-dir por defecto: rutas.caida_dir de config.yaml (raíz del repo)
+with open(REPO / "config.yaml", encoding="utf-8") as _f:
+    CAIDA_DIR_DEFECTO = yaml.safe_load(_f)["rutas"]["caida_dir"]
 
 # Configuración mínima para comprobar que todo corre (no para obtener resultados)
-CONFIG_RAPIDA = {
-    "hidden_dim": 16, "out_dim": 8, "epochs": 2, "patience": 2, "num_heads": 1,
-    "epochs_muestreo": 1, "deepwalk_epochs": 1, "bgp2vec_max_routes": 20_000,
-    "bgp2vec_count_routes": False, "ann_epochs": 2,
-}
+# CONFIG_RAPIDA = {
+#     "hidden_dim": 16, "out_dim": 8, "epochs": 2, "patience": 2, "num_heads": 1,
+#     "epochs_muestreo": 1, "deepwalk_epochs": 1, "bgp2vec_max_routes": 20_000,
+#     "bgp2vec_count_routes": False, "ann_epochs": 2,
+# }
 
 
 def buscar_grafos(exp_dir, filtros):
