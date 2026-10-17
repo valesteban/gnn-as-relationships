@@ -445,7 +445,7 @@ Resultados registrados en los outputs del notebook (test):
 
 ### 4.1 Requisitos de entorno
 
-* **SO**: Linux (desarrollado en Ubuntu, kernel 6.8).
+* **SO**: Linux (desarrollado en Ubuntu, kernel 6.8). También se preparó un equipo Windows 10 con GPU (RTX 3060 Ti, 8 GB) con los datos en `F:\`: Python 3.13, torch 2.11+cu128, PyG 2.8 sin extensiones opcionales (ver el README, *En Windows con GPU*). Allí `pyg_lib`/`torch_sparse`/`torch_cluster` no están instaladas, así que pueden fallar `LinkNeighborLoader`, `ClusterData` y `Node2Vec`, y el Caso 2 del por partes necesita `caida_pyg.pt` (conversión desde `caida.bin` con DGL).
 * **Python 3.10** (los notebooks usan el kernel `env310`, Python 3.10.12).
 * **CPU/GPU**: el código selecciona `cuda` si está disponible; los outputs guardados muestran ejecución en **CPU** (Caso 0 ≈ 44 min por modelo). Con GPU (CUDA 12.1) los tiempos bajan un orden de magnitud.
 * **RAM**: el grafo de 2026-09-16 (88 k nodos, 1,34 M aristas dirigidas, 85 features) cabe en pocos GB para los encoders GCN/SAGE. Los GAT full-batch con `hidden=256` se quedan sin memoria en la máquina de desarrollo (15 GB, sin GPU): para pruebas use dims pequeñas (`hidden=32`, `out=16`).
@@ -503,11 +503,13 @@ umap-learn
 jupyter
 ```
 
-> **Importante sobre rutas.** Los notebooks tienen rutas absolutas a un disco externo. Todas se definen en su celda de configuración (celda 6 del end-to-end y celda 3 del por partes):
-> * `GRAFO_DIR`: carpeta del grafo de `as-level-internet-graph`, `/media/vale/KINGSTON/as-level-internet-graph/experimentos/experimento<N>/grafos/<año>/<mes>/<AAAAMMDDTHHMM>/`. **Para cambiar de grafo basta con cambiar esta variable.**
-> * `CAIDA_DIR`: carpeta con los `AAAAMM01.as-rel.txt.bz2`; hoy `/media/vale/KINGSTON/TESIS/data_2026/`.
-> * `RIBS_DIR` (solo por partes, BGP2Vec): RIBs en texto (`rib_*.txt`), que `as-level-internet-graph` no genera; hoy las de marzo en `/media/vale/KINGSTON/TESIS/data_2026/`.
-> * `TESIS_PATH`: el dataset ToR y el grafo externo 2022 del enfoque por partes siguen en `/media/vale/KINGSTON/TESIS/`.
+> **Importante sobre rutas.** Las rutas absolutas al disco externo y los parámetros de ambos notebooks se definen en **`config.yaml`** (raíz del repo; cada notebook lo lee con `yaml.safe_load` en su celda de configuración y `scripts/correr_experimento.py` toma de ahí `rutas.caida_dir`). Hoy apuntan a `F:/`; en el equipo Linux original eran `/media/vale/KINGSTON/...`:
+> * `GRAFO_DIR`: carpeta del grafo de `as-level-internet-graph`, `<AS_GRAPH_DIR>/experimentos/experimento<N>/grafos/<año>/<mes>/<AAAAMMDDTHHMM>/`. **Para cambiar de grafo basta con cambiar esta variable.**
+> * `CAIDA_DIR` (y `CAIDA_DIR_DEFECTO`, que usa `correr_experimento.py`): carpeta con los `AAAAMM01.as-rel.txt.bz2`; hoy `F:/TESIS/data_2026/`.
+> * `RIBS_DIR` (solo por partes, BGP2Vec): RIBs en texto (`rib_*.txt`), que `as-level-internet-graph` no genera; hoy las de marzo en `F:/TESIS/data_2026/`.
+> * `TESIS_PATH`, `TOR_DATA_DIR` e `INTERNETGRAPH_FILE`: el dataset ToR y el grafo externo 2022 del enfoque por partes, en `F:/TESIS/`.
+>
+> `config.yaml` también contiene `comunes.seed`, `global_config_endtoend` y `global_config_por_partes` (hiperparámetros, `split`, vecinos/batch/clusters, `deepwalk`, BGP2Vec, `MLP`), que los notebooks cargan como `GLOBAL_CONFIG`. `GRAFO_DIR`, `CAIDA_DIR`, `SEED`, `RESULTS_ROOT` y `GNN_CONFIG` (JSON) se sobrescriben con variables de entorno (las fija `correr_experimento.py` por grafo); `CONFIG_FILE` apunta a otro YAML. Los decimales se escriben con punto (`0.0005`), porque PyYAML lee `5e-4` como texto. El `split` del end-to-end debe cumplir `train_size + val_size < 1.0`.
 >
 > La carpeta antigua `/media/vale/KINGSTON/as-level-internet-graph/grafos/` ya no existe (se borró el 2026-10-14). **No existen flags de línea de comandos** (ver §5).
 
