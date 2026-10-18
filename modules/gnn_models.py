@@ -57,7 +57,8 @@ class GCN3L(nn.Module):
         self.conv2 = GCNConv(hidden_feats, hidden_feats)
         self.conv3 = GCNConv(hidden_feats, out_feats)
 
-        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim)
+        # Decoders
+        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim, drop=drop)
         self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
 
@@ -97,7 +98,8 @@ class GraphSAGE3L(nn.Module):
         self.conv2 = SAGEConv(hidden_feats, hidden_feats, aggr='mean')
         self.conv3 = SAGEConv(hidden_feats, out_feats, aggr='mean')
 
-        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim)
+        # Decoders
+        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim, drop=drop)
         self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)
 
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
@@ -135,7 +137,8 @@ class GAT3L(nn.Module):
         self.conv2 = GATConv(hidden_feats * num_heads, hidden_feats, heads=num_heads)
         self.conv3 = GATConv(hidden_feats * num_heads, out_feats, heads=num_heads)
 
-        self.MLP = MLPPredictor(out_feats * num_heads, out_feats_mlp, edge_dim=edge_dim)
+        # Decoders
+        self.MLP = MLPPredictor(out_feats * num_heads, out_feats_mlp, edge_dim=edge_dim, drop=drop)
         self.Bilinear = BilinearPredictor(out_feats * num_heads, out_feats_mlp)
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
         self.regressor = nn.Linear(out_feats * num_heads, 1)
@@ -170,7 +173,8 @@ class GCN2L(nn.Module):
         self.conv1 = GCNConv(in_feats, hidden_feats)
         self.conv2 = GCNConv(hidden_feats, out_feats)
 
-        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim)
+        # Decoders
+        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim, drop=drop)
         self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
         self.drop = nn.Dropout(drop)
@@ -202,7 +206,8 @@ class GraphSAGE2L(nn.Module):
         self.conv1 = SAGEConv(in_feats, hidden_feats, aggr='mean') # FIXME: agregator sea un parámtro
         self.conv2 = SAGEConv(hidden_feats, out_feats, aggr='mean')
 
-        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim)
+        # Decoders
+        self.MLP = MLPPredictor(out_feats, out_feats_mlp, edge_dim=edge_dim, drop=drop)
         self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)
 
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
@@ -235,8 +240,9 @@ class GAT2L(nn.Module):
         self.conv1 = GATConv(in_feats, hidden_feats, heads=num_heads)
         self.conv2 = GATConv(hidden_feats * num_heads, out_feats, heads=num_heads)
 
-        self.MLP = MLPPredictor(out_feats * num_heads, out_feats_mlp, edge_dim=edge_dim)
-        self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)
+        # Decoders
+        self.MLP = MLPPredictor(out_feats * num_heads, out_feats_mlp, edge_dim=edge_dim, drop=drop)
+        self.Bilinear = BilinearPredictor(out_feats * num_heads, out_feats_mlp)
 
         self.DotProduct = DotProductPredictor() # Reemplaza Bilinear
         self.drop = nn.Dropout(drop)
@@ -277,7 +283,12 @@ class GCNSampler2L(nn.Module):
         super().__init__()
         self.conv1 = GCNConv(in_feats,  hidden_feats)
         self.conv2 = GCNConv(hidden_feats, out_feats)
+
+        # Decoders
         self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
+        self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)      # NUEVO
+
+
 
     def encode(self, x, edge_index):
         h = F.relu(self.conv1(x, edge_index))
@@ -286,6 +297,10 @@ class GCNSampler2L(nn.Module):
 
     def decodeMLP(self, edge_index, h, edge_attr=None):
         return self.MLP(edge_index, h, edge_attr)
+
+    def decodeBilinear(self, edge_index, h):                             # NUEVO
+        return self.Bilinear(edge_index, h)
+
 
     def forward(self, x, edge_index):
         return self.encode(x, edge_index)
@@ -296,7 +311,11 @@ class GraphSAGESample2L(nn.Module):
         super().__init__()
         self.conv1 = SAGEConv(in_feats, hidden_feats, aggr=aggregator)
         self.conv2 = SAGEConv(hidden_feats, out_feats, aggr=aggregator)
+        
+        # Decoders
         self.MLP   = MLPPredictor(out_feats, out_feats_mlp)
+        self.Bilinear = BilinearPredictor(out_feats, out_feats_mlp)      # NUEVO
+
 
 
     def encode(self, x, edge_index):
@@ -306,6 +325,9 @@ class GraphSAGESample2L(nn.Module):
 
     def decodeMLP(self, edge_index, h, edge_attr=None):
         return self.MLP(edge_index, h, edge_attr)
+    
+    def decodeBilinear(self, edge_index, h):                             # NUEVO
+            return self.Bilinear(edge_index, h)
 
     def forward(self, x, edge_index):
         return self.encode(x, edge_index)
@@ -318,7 +340,12 @@ class GATSample2L(nn.Module):
         # La salida final es (N, out*heads), igual que el flatten(1) de la versión DGL.
         self.conv1 = GATConv(in_feats, hidden_feats, heads=num_heads)
         self.conv2 = GATConv(hidden_feats * num_heads, out_feats, heads=num_heads)
+        
+        # Decoders
         self.MLP   = MLPPredictor(out_feats * num_heads, out_feats_mlp)
+        self.Bilinear = BilinearPredictor(out_feats * num_heads, out_feats_mlp)
+
+
         self.num_heads = num_heads
 
     def encode(self, x, edge_index):
@@ -329,6 +356,9 @@ class GATSample2L(nn.Module):
 
     def decodeMLP(self, edge_index, h, edge_attr=None):
         return self.MLP(edge_index, h, edge_attr)
+
+    def decodeBilinear(self, edge_index, h):                             # NUEVO
+            return self.Bilinear(edge_index, h)
 
     def forward(self, x, edge_index):
         return self.encode(x, edge_index)
