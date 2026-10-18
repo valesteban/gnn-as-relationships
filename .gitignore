@@ -8,6 +8,8 @@ ENV/
 env.bak/
 venv.bak/
 env310/
+env312/
+env*/
 ennv310/
 
 # Archivos test/análisis
@@ -30,3 +32,7 @@ results/*
 *.md
 !README.md
 !DOCUMENTATION.md
+
+# Bytecode de Python
+__pycache__/
+*.pyc
