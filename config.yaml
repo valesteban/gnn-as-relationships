@@ -1,7 +1,7 @@
 # Configuración central de gnn-as-relationships.
 experimento:
   # Nombre corrida
-  nombre: prueba e2e
+  nombre: experimento7_20250916T0800
   salida: /media/vale/KINGSTON/LAB/gnn-as-relationships/resultados_gnn
 
 rutas:
@@ -17,6 +17,8 @@ rutas:
   # Paper: https://arxiv.org/pdf/2210.14189
   # github: https://github.com/dpgiakatos/gnn-internet-data
   internetgraph_file: /media/vale/KINGSTON/LAB/gnn-as-relationships/InternetGNNData2022/caida/caida.bin
+  # FIXME: cambiar 
+  rib_file_bgp2vec: /media/vale/KINGSTON/TESIS/data_2026/rib_20260301_0000_to_20260302_0000.txt
 
 comunes:
   seed: 42  # splits, pesos iniciales, dropout, caminatas y orden de mini-batches
@@ -27,14 +29,6 @@ comunes:
   class_weights: true   # pondera la cross-entropy por la inversa de la frecuencia de cada clase en train
   
   
-# Clasificador MLP
-MLP:
-  hidden: 256
-  dropout: 0.3
-  lr: 0.001
-  patience: 50
-  batch: 512
-  val_size: 0.2
 
 # ---------------------------------------------------------------------------
 # ENFOQUES END TO END: 
@@ -43,8 +37,8 @@ global_config_endtoend:
   lr: 0.001
   hidden_dim: 256
   out_dim: 128
-  epochs: 100
-  patience: 120
+  epochs: 300
+  patience: 40
   weight_decay: 0.0005
   dropout: 0.3
   num_heads: 1
@@ -55,17 +49,17 @@ global_config_endtoend:
   # hidden_dim/out_dim). GAT con muestreo (Caso 2) usa hidden_dim/out_dim.
   gat_hidden_dim: 64
   gat_out_dim: 32
-  batch_size: 1024
-  num_neighbors: 15   # GraphSAGE/GAT con muestreo
+     # GraphSAGE/GAT con muestreo
   # split_edges_classification: train_size + val_size < 1.0 (el resto es test)
   
   
   # CASO 2: Random Neighbour Sampling
-  n_neighbors: 15
+  num_neighbors: 15
   batch_size_caso2: 1024
+  epochs_c2: 10
 
   # CASO 3: ClusterGCN
-  num_parts: 1000
+  num_parts: 400
   batch_size_caso3: 20
 
   # CASO 4: features aleatorias
@@ -76,38 +70,54 @@ global_config_endtoend:
 # ---------------------------------------------------------------------------
 # ENFOQUES POR PARTES: 
 # ---------------------------------------------------------------------------
+
 global_config_por_partes:
-  cases: [0] 
-  lr: 0.0005
+  lr: 0.001
   hidden_dim: 256
   out_dim: 128
   dropout: 0.3
-  epochs: 500
-  patience: 80
+  epochs: 300
+  patience: 40
+  num_heads: 1
+  gat_hidden_dim: 64
+  gat_out_dim: 32
   weight_decay: 0.0005
   scheduler: {T_0: 100, T_mult: 2}
-  label_smooth: 0.05  # evita que el modelo sea "demasiado seguro" de clases erróneas
-  # Opcionales (los notebooks usan estos valores por defecto):
-  # deepwalk_epochs: 50
-  # bgp2vec_max_routes: 5000000
-  # bgp2vec_count_routes: true
-  # ann_epochs: 200
+
+  # Clasificador 
+  clasificador:
+    hidden: 256
+    dropout: 0.3
+    lr: 0.001
+    weight_decay: 0.0001
+    epochs: 300
+    patience: 40
+    batch_size: 4096      # solo entrenamiento_con_batches
+    label_smooth: 0.05
+    class_weights: true   # pondera la cross-entropy por la inversa de la frecuencia de cada clase en train
+    scheduler: {T_0: 100,
+                T_mult: 2}
 
 
   # DeepWalk (Node2Vec con p = q = 1)
   deepwalk:
-    embedding_dim: 32
+    embedding_dim: 128
     walk_length: 40
-    context_size: 2
-    walks_per_node: 1
+    context_size: 10
+    walks_per_node: 10
     p: 1.0
     q: 1.0
     num_negative_samples: 5
-    batch_size: 128
+    batch_size: 256
     lr: 0.01
+    epochs: 10
 
   # BGP2Vec
-  bgp2vec_epochs: 1
-  bgp2vec_test_limit: 27000000   # cantidad de rutas
-
+  # BGP2Vec (Word2Vec skip-gram sobre las rutas AS)
+  bgp2vec:
+    embedding_dim: 32
+    window: 2
+    negative: 5
+    epochs: 3
+    max_rutas: null   # null = todas las rutas del archivo
 

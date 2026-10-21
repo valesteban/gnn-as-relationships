@@ -70,63 +70,6 @@ class GNN:
         self.debug = debug
         self.graph = None
 
-    # ------------------------------------------------------------------
-    # Tiempos de entrenamiento
-    # ------------------------------------------------------------------
-    @staticmethod
-    def formato_tiempo(segundos):
-        """Formatea segundos como '3m 12.4s'."""
-        mins, secs = divmod(float(segundos), 60)
-        return f"{int(mins)}m {secs:.1f}s"
-
-    @staticmethod
-    @contextmanager
-    def timer(nombre="", imprimir=True):
-        """Mide cuánto demora un bloque; el resultado queda en `.segundos` al salir.
-
-        Uso:
-            with GNN.timer("GCN2L (MLP)") as t:
-                ...entrenamiento...
-            t.segundos   # float
-        """
-        class _Tiempo:
-            segundos = 0.0
-
-        t = _Tiempo()
-        t0 = time.perf_counter()
-        try:
-            yield t
-        finally:
-            t.segundos = time.perf_counter() - t0
-            if imprimir:
-                print(f"[TIEMPO] {nombre}: {GNN.formato_tiempo(t.segundos)}  ({t.segundos:.1f}s total)")
-
-    @staticmethod
-    def _tiempo_path(embeddings_path):
-        # embeddings_ribs_X.pt -> embeddings_ribs_X.tiempo.json ; bgp2vec.word2vec -> bgp2vec.tiempo.json
-        return Path(embeddings_path).with_suffix(".tiempo.json")
-
-    @staticmethod
-    def save_tiempo_embedding(embeddings_path, tiempo_s, epocas=None, **extra):
-        """Guarda junto al archivo de embeddings cuánto demoró en entrenarse el modelo que los generó.
-
-        El clasificador ANN (por partes) lo lee con `load_tiempo_embedding` para
-        reportar el tiempo total embedding + clasificador.
-        """
-        datos = {"embeddings": Path(embeddings_path).name, "tiempo_s": round(float(tiempo_s), 2),
-                 "epocas": epocas, "fecha": datetime.now().isoformat(timespec="seconds"), **extra}
-        with open(GNN._tiempo_path(embeddings_path), "w", encoding="utf-8") as f:
-            json.dump(datos, f, indent=2, ensure_ascii=False, default=str)
-
-    @staticmethod
-    def load_tiempo_embedding(embeddings_path):
-        """Lee el tiempo guardado por `save_tiempo_embedding`; {} si no existe (embeddings antiguos)."""
-        ruta = GNN._tiempo_path(embeddings_path)
-        if not ruta.exists():
-            return {}
-        with open(ruta, encoding="utf-8") as f:
-            return json.load(f)
-
     def _reverse_relationship_value(self, value):
         """Invierte la relación para la arista en sentido contrario.
 
@@ -144,7 +87,7 @@ class GNN:
             "P2C": 1,
         }
         return mapping.get(value, value)
-
+    # TODO: rvisar
     def _make_edges_bidirectional(self, df_e: pd.DataFrame) -> pd.DataFrame:
         """Devuelve un DataFrame de aristas en ambos sentidos sin duplicados exactos."""
         required_cols = {"src_id", "dst_id"}
@@ -164,6 +107,7 @@ class GNN:
         df_bi = df_bi.reset_index(drop=True)
         return df_bi
 
+    # TODO: rvisar qu hac
     def _normalize_relationship_column(self, df_e: pd.DataFrame) -> pd.DataFrame:
         """Normaliza columna relationship a int (0/1/2 y opcionalmente -1)."""
         if "relationship" not in df_e.columns:
@@ -241,6 +185,7 @@ class GNN:
             if hasattr(self.graph, 'edge_attr') and self.graph.edge_attr is not None:
                 print(f"Edge features: {self.graph.edge_attr.shape[1]} dim")
 
+    # TODO: rvisar s usa n caso 1 ndtond
     def load_dataset_only_cntrality_attr(self, nodes_csv, edges_csv, add_reverse_edges=True):
 
         # 1. Cargar CSVs
@@ -455,6 +400,9 @@ class GNN:
                 relaciones[(min(a, b), max(a, b))] = lbl
         return relaciones
 
+    # ===========================
+    # Dscarga archivos
+    # ============================
     @staticmethod
     def caida_file_for_graph(graph_dir, caida_dir):
         """Devuelve el archivo CAIDA del mes del grafo.
@@ -478,65 +426,7 @@ class GNN:
             )
         return caida_file
 
-    def label_edges_from_caida(self, edges_csv, caida_file, output_csv=None):
-        """Agrega la columna 'relationship' a un CSV de aristas usando CAIDA.
-
-        La etiqueta sigue el sentido de cada fila (src_asn → dst_asn): 0 = P2P,
-        1 = C2P, 2 = P2C. Los enlaces que no están en CAIDA quedan en -1. No se
-        agregan aristas ni nodos y no se reordenan las filas (el orden determina
-        los splits).
-
-        Si output_csv no es None, escribe el CSV etiquetado y, en la misma
-        carpeta, etiquetas_caida.json con el resumen. Devuelve el resumen.
-        """
-        df_e = pd.read_csv(edges_csv)
-        required_cols = {"src_asn", "dst_asn"}
-        if not required_cols.issubset(df_e.columns):
-            missing = required_cols - set(df_e.columns)
-            raise ValueError(f"Faltan columnas requeridas en edges_csv: {missing}")
-
-        relaciones = self._read_caida_relationships(caida_file)
-
-        src = df_e["src_asn"].astype("int64").tolist()
-        dst = df_e["dst_asn"].astype("int64").tolist()
-        etiquetas = np.full(len(df_e), -1, dtype=np.int8)
-        enlaces = set()
-        for i, (u, v) in enumerate(zip(src, dst)):
-            key = (u, v) if u < v else (v, u)
-            enlaces.add(key)
-            lbl = relaciones.get(key)
-            if lbl is None:
-                continue
-            # La etiqueta de CAIDA está vista desde el ASN menor
-            etiquetas[i] = lbl if u < v else self._reverse_relationship_value(lbl)
-        df_e["relationship"] = etiquetas
-
-        conteo = Counter(etiquetas.tolist())
-        caida_en_grafo = sum(1 for k in enlaces if k in relaciones)
-        resumen = {
-            "edges_csv": str(edges_csv),
-            "caida_file": str(caida_file),
-            "aristas": len(df_e),
-            "p2p": conteo.get(0, 0),
-            "c2p": conteo.get(1, 0),
-            "p2c": conteo.get(2, 0),
-            "sin_etiqueta": conteo.get(-1, 0),
-            "caida_total": len(relaciones),
-            "caida_en_grafo": caida_en_grafo,
-            "caida_ausentes": len(relaciones) - caida_en_grafo,
-        }
-
-        if output_csv is not None:
-            output_csv = Path(output_csv)
-            df_e.to_csv(output_csv, index=False)
-            resumen["output_csv"] = str(output_csv)
-            with open(output_csv.parent / "etiquetas_caida.json", "w", encoding="utf-8") as f:
-                json.dump(resumen, f, indent=2, ensure_ascii=False)
-
-        if self.debug:
-            print(f"[CAIDA] {resumen}")
-        return resumen
-
+    # FIXME: guarad mas caras para bnchmark, pro s supon qu como socupa sd todas las vcs qcro las mascaras dbriaan sr iguals?
     def build_tor_dataset(self, edges_csv, output_dir, test_size=0.2, seed=42):
         """Crea el dataset ToR del clasificador ANN (enfoque por partes) desde un CSV etiquetado.
 
@@ -764,161 +654,132 @@ class GNN:
             return train_eids, val_eids, test_eids
 
 
-    def split_graph_nodes(self, train_size=0.8):
-        num_nodes = self.graph.num_nodes
+    # TODO: rvisar funcion complta 
+    def split_edges_link_prediction(self, train_size: float = 0.8, val_size: float = 0.0,
+                                    seed: int = 42, balance_mode=None, train_ratio=None):
+        """
+        Divide las aristas en train/val/test para link prediction SIN fuga entre
+        direcciones opuestas: el split se hace por enlace no dirigido {u, v}, de modo
+        que u->v y v->u siempre caen en el mismo conjunto.
 
-        # Índices aleatorios de nodos
-        node_ids = torch.randperm(num_nodes)
+        Crea:
+            • self.train_g                      : grafo del encoder (solo enlaces de train)
+            • self.train_pos_g / train_neg_g    : positivos / negativos de entrenamiento
+            • self.val_pos_g   / val_neg_g      : positivos / negativos de validación
+            • self.test_pos_g  / test_neg_g     : positivos / negativos de test
 
-        num_train = int(train_size * num_nodes)
-        num_test = num_nodes - num_train
+        Negativos: pares {u, v} con u != v sin arista en ninguna dirección en el grafo
+        completo, distintos entre sí y entre splits, con dirección aleatoria; hay
+        tantos negativos como positivos en cada split.
 
-        train_mask = torch.zeros(num_nodes, dtype=torch.bool)
-        test_mask = torch.zeros(num_nodes, dtype=torch.bool)
-
-        train_mask[node_ids[:num_train]] = True
-        test_mask[node_ids[num_train:]] = True
-
-        # Guardar en el grafo (prefijo node_ para distinguirlas de las máscaras de arista)
-        self.graph.node_train_mask = train_mask
-        self.graph.node_test_mask = test_mask
-
-        if self.debug:
-            print(f"Train nodes: {train_mask.sum().item()}, Test nodes: {test_mask.sum().item()}")
-
-
-    def split_edges_link_prediction(self, train_ratio: float = 0.8, seed: int = 42):
-
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.manual_seed(seed)
-        torch_geometric.seed_everything(seed)  # asegura consistencia en operaciones internas de PyG
+        Args
+        ----
+        train_size   : float  fracción de enlaces para train
+        val_size     : float  fracción de enlaces para validación (0 → sin validación)
+        seed         : int    semilla de reproducibilidad
+        balance_mode : ignorado (link prediction no tiene clases); se acepta para poder
+                       pasar `comunes.split` de config.yaml con **
+        train_ratio  : nombre antiguo de train_size
+        """
+        if train_ratio is not None:
+            train_size = train_ratio
+        if not (0.0 < train_size < 1.0):
+            raise ValueError(f"train_size debe estar entre 0 y 1. Recibido: {train_size}")
+        if not (0.0 <= val_size < 1.0):
+            raise ValueError(f"val_size debe estar entre 0 y 1. Recibido: {val_size}")
+        if train_size + val_size >= 1.0:
+            raise ValueError("train_size + val_size debe ser < 1.0 para dejar espacio a test")
 
         g = self.graph
-        num_edges  = g.num_edges
-        num_nodes  = g.num_nodes
-        if num_edges == 0:
+        num_nodes = g.num_nodes
+        if g.num_edges == 0:
             raise ValueError("El grafo no contiene aristas.")
+        gen = torch.Generator().manual_seed(seed)
 
-        rng = np.random.default_rng(seed)
-
-        # 1.- Barajar eids y separar train / test
+        # 1.- Agrupar aristas dirigidas por enlace no dirigido {min(u,v), max(u,v)}
         # --------------------------
-        eids = np.arange(num_edges)
-        rng.shuffle(eids)
-        split_idx   = int(num_edges * train_ratio)
-        train_eids  = torch.as_tensor(eids[:split_idx],  dtype=torch.int64)
-        test_eids   = torch.as_tensor(eids[split_idx:], dtype=torch.int64)
+        src, dst = g.edge_index[0].long(), g.edge_index[1].long()
+        link_keys = torch.minimum(src, dst) * num_nodes + torch.maximum(src, dst)
+        uniq_links, link_of_edge = torch.unique(link_keys, return_inverse=True)
+        num_links = uniq_links.numel()
 
-        # 2.- Grafo para el encoder (sin aristas de test)
+        # 2.- Barajar enlaces y asignar cada uno a un split (0 = train, 1 = val, 2 = test)
         # --------------------------
-        # IMPORTANTE:  mantenemos todas las aristas menos las POSITIVAS de test
-        keep = torch.ones(num_edges, dtype=torch.bool)
-        keep[test_eids] = False
+        perm = torch.randperm(num_links, generator=gen)
+        n_train = int(num_links * train_size)
+        n_val   = int(num_links * val_size)
+        split_of_link = torch.full((num_links,), 2, dtype=torch.long)
+        split_of_link[perm[:n_train]] = 0
+        split_of_link[perm[n_train:n_train + n_val]] = 1
+        split_of_edge = split_of_link[link_of_edge]
+
+        train_eids = torch.where(split_of_edge == 0)[0]
+        val_eids   = torch.where(split_of_edge == 1)[0]
+        test_eids  = torch.where(split_of_edge == 2)[0]
+
+        # 3.- Grafo del encoder: solo enlaces de train (ninguna dirección de val/test)
+        # --------------------------
+        keep = split_of_edge == 0
         self.train_g = Data(edge_index=g.edge_index[:, keep], num_nodes=num_nodes)
         for k in _edge_keys(g):
             setattr(self.train_g, k, getattr(g, k)[keep])
 
-        # 3.- Subgrafos POSITIVOS
+        # 4.- Subgrafos POSITIVOS
         # --------------------------
         self.train_pos_g = Data(edge_index=g.edge_index[:, train_eids], num_nodes=num_nodes)
+        self.val_pos_g   = Data(edge_index=g.edge_index[:, val_eids],   num_nodes=num_nodes)
         self.test_pos_g  = Data(edge_index=g.edge_index[:, test_eids],  num_nodes=num_nodes)
 
-        # Copiamos feats (si existen) a los subgrafos positivos
-        if getattr(g, "x", None) is not None:
-            for gg in (self.train_g, self.train_pos_g, self.test_pos_g):
-                gg.x = g.x
+        label_key = next((k for k in ["edge_label", "label", "relationship", "Relationship"]
+                          if getattr(g, k, None) is not None), None)
+        if label_key is not None:
+            rel = getattr(g, label_key)
+            for gg, eids in ((self.train_pos_g, train_eids), (self.val_pos_g, val_eids),
+                             (self.test_pos_g, test_eids)):
+                setattr(gg, label_key, rel[eids])
 
-        # Copiamos etiquetas (si existen) a POS
-        if getattr(g, "Relationship", None) is not None:
-            rel = g.Relationship
-            self.train_pos_g.Relationship = rel[train_eids]
-            self.test_pos_g.Relationship  = rel[test_eids]
-
-        # 4.- Subgrafos NEGATIVOS (muestreo uniforme)
+        # 5.- Subgrafos NEGATIVOS (muestreo uniforme de pares no conectados)
         # --------------------------
-        def sample_negative(k: int):
-            """Devuelve k pares (u,v) que NO existen en g."""
-            # sobre-muestramos y filtramos para vectorizar
-            max_trials = 3
-            collected_u, collected_v = [], []
-            while len(collected_u) < k and max_trials:
-                need   = k - len(collected_u)
-                cand_u = torch.randint(0, num_nodes, (need * 2,))
-                cand_v = torch.randint(0, num_nodes, (need * 2,))
-                mask   = _edge_ids(g.edge_index, num_nodes, cand_u, cand_v) < 0
-                cand_u, cand_v = cand_u[mask], cand_v[mask]
-                collected_u.extend(cand_u[:need].tolist())
-                collected_v.extend(cand_v[:need].tolist())
-                max_trials -= 1
-            return torch.as_tensor(collected_u), torch.as_tensor(collected_v)
+        n_neg = (train_eids.numel(), val_eids.numel(), test_eids.numel())
+        need_total = sum(n_neg)
+        neg_keys = torch.empty(0, dtype=torch.long)
+        for _ in range(20):
+            if neg_keys.numel() >= need_total:
+                break
+            m = 2 * (need_total - neg_keys.numel())
+            cu = torch.randint(0, num_nodes, (m,), generator=gen)
+            cv = torch.randint(0, num_nodes, (m,), generator=gen)
+            ok = cu != cv
+            cand = torch.minimum(cu, cv)[ok] * num_nodes + torch.maximum(cu, cv)[ok]
+            cand = cand[~torch.isin(cand, uniq_links)]
+            neg_keys = torch.unique(torch.cat([neg_keys, cand]))
+        if neg_keys.numel() < need_total:
+            raise RuntimeError(f"Solo se encontraron {neg_keys.numel()} negativos de {need_total}.")
+        neg_keys = neg_keys[torch.randperm(neg_keys.numel(), generator=gen)[:need_total]]
 
-        train_neg_u, train_neg_v = sample_negative(len(train_eids))
-        test_neg_u,  test_neg_v  = sample_negative(len(test_eids))
+        lo, hi = neg_keys // num_nodes, neg_keys % num_nodes
+        flip = torch.rand(need_total, generator=gen) < 0.5   # u<v no debe delatar a los negativos
+        neg_u = torch.where(flip, hi, lo)
+        neg_v = torch.where(flip, lo, hi)
 
-        self.train_neg_g = Data(edge_index=torch.stack([train_neg_u, train_neg_v]), num_nodes=num_nodes)
-        self.test_neg_g  = Data(edge_index=torch.stack([test_neg_u,  test_neg_v]),  num_nodes=num_nodes)
+        a, b = n_neg[0], n_neg[0] + n_neg[1]
+        self.train_neg_g = Data(edge_index=torch.stack([neg_u[:a],  neg_v[:a]]),  num_nodes=num_nodes)
+        self.val_neg_g   = Data(edge_index=torch.stack([neg_u[a:b], neg_v[a:b]]), num_nodes=num_nodes)
+        self.test_neg_g  = Data(edge_index=torch.stack([neg_u[b:],  neg_v[b:]]),  num_nodes=num_nodes)
 
         if getattr(g, "x", None) is not None:
-            for gg in (self.train_neg_g, self.test_neg_g):
+            for gg in (self.train_g, self.train_pos_g, self.val_pos_g, self.test_pos_g,
+                       self.train_neg_g, self.val_neg_g, self.test_neg_g):
                 gg.x = g.x
 
         if self.debug:
-            print(f"[split_basic] +pos train={len(train_eids)}  +pos test={len(test_eids)}")
-            print(f"[split_basic] -neg train={self.train_neg_g.num_edges} "
-                f"-neg test={self.test_neg_g.num_edges}")
+            print(f"[split_link_pred] enlaces: train={n_train:,}  val={n_val:,}  "
+                  f"test={num_links - n_train - n_val:,}")
+            print(f"[split_link_pred] +pos train={train_eids.numel():,}  +pos val={val_eids.numel():,}  "
+                  f"+pos test={test_eids.numel():,}")
+            print(f"[split_link_pred] -neg train={a:,}  -neg val={b - a:,}  -neg test={need_total - b:,}")
 
-    def split_edges_classification_leaky(self, train_size=0.8, seed=0):
-        """
-        Crea dos máscaras booleanas en el grafo:
-            • 'train_mask' : aristas usadas para entrenar
-            • 'test_mask'  : aristas usadas para evaluar
-        NO se agrupan las direcciones opuestas ⇒ posible fuga de información.
-
-        Args
-        ----
-        train_ratio : float   proporción de aristas etiquetadas 0/1/2 que van a train
-        seed        : int     semilla de reproducibilidad
-        """
-
-
-        rng = random.Random(seed)
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-
-        rel = self.graph.Relationship      # 0/1/2/-1
-        is_lbl = rel >= 0                               # sólo etiquetadas
-
-        all_eids = torch.nonzero(is_lbl, as_tuple=False).squeeze()   # tensor 1-D
-        n_total  = len(all_eids)
-        n_train  = int(n_total * train_size)
-
-        # barajamos y partimos
-        idx = torch.randperm(n_total, generator=torch.Generator().manual_seed(seed))
-        train_eids = all_eids[idx[:n_train]]
-        test_eids  = all_eids[idx[n_train:]]
-
-        # máscaras
-        num_e = self.graph.num_edges
-        train_mask = torch.zeros(num_e, dtype=torch.bool)
-        test_mask  = torch.zeros(num_e, dtype=torch.bool)
-
-        train_mask[train_eids] = True
-        test_mask[test_eids]   = True
-        # las aristas −1 quedan con ambas máscaras a False
-
-        self.graph.train_mask = train_mask
-        self.graph.test_mask  = test_mask
-
-        # ── resumen rápido ────────────────────────────────────────────
-        cnt_tr = Counter(rel[train_mask].tolist())
-        cnt_te = Counter(rel[test_mask].tolist())
-        print(f"[split_leaky] train={train_mask.sum().item():,}  "
-            f"test={test_mask.sum().item():,}")
-        print(f"  clases train 0/1/2 → {dict(cnt_tr)}")
-        print(f"  clases test  0/1/2 → {dict(cnt_te)}")
-
-
+    # TODO: rvisar
     def add_random_features(self, dim: int = 64,
                                 std: float = 0.05,
                                 seed: int | None = None,
@@ -963,6 +824,7 @@ class GNN:
         if self.debug:
             print(f"[add_random_features] feat ← ({n}, {dim})  |  mode={mode}")
 
+    # TODO: usar lugo y  vr si cambia
     def remove_low_degree_nodes(self, degree: int = 1, iterations: int = 3):
         """Elimina iterativamente nodos con grado undirected <= degree.
 
@@ -1019,78 +881,3 @@ class GNN:
             if getattr(self.graph, 'edge_label', None) is not None:
                 c = Counter(self.graph.edge_label.tolist())
                 print(f"[remove_low_degree] Distribución final de etiquetas: {dict(c)}")
-
-    # FIXME: comparar con l original ¿cual djo ?¿cual s la difrncia ntr ambos?
-    def split_edges_classification_v0(self, train_size=0.7, val_size=0.15, seed=0,
-                                return_eids=False, store_eids=True):
-        """
-        Split no-leak para edge-classification con train/val/test.
-
-        • train_size: fracción para entrenamiento (default 0.7 = 70%)
-        • val_size: fracción para validación (default 0.15 = 15%)
-        • test_size = 1 - train_size - val_size (default 0.15 = 15%)
-        • Crea graph.train_mask, val_mask y test_mask.
-        • Devuelve (train_eids, val_eids, test_eids) si `return_eids=True`.
-        • Opcionalmente los guarda como atributos (para reutilizarlos).
-        """
-
-
-        rng = random.Random(seed)
-        torch.manual_seed(seed); np.random.seed(seed)
-
-        u, v  = self.graph.edge_index[0], self.graph.edge_index[1]
-        rel   = self.graph.Relationship
-        is_lbl = rel >= 0
-
-        # 1.- Agrupar dos direcciones
-        # --------------------------
-        pair2eids = defaultdict(list)
-        for eid, (ui, vi) in enumerate(zip(u.tolist(), v.tolist())):
-            if is_lbl[eid]:
-                pair2eids[(min(ui, vi), max(ui, vi))].append(eid)
-
-        pairs = list(pair2eids.keys());   rng.shuffle(pairs)
-
-        # Split train/val/test
-        n_train = int(len(pairs) * train_size)
-        n_val = int(len(pairs) * val_size)
-
-        train_pairs = pairs[:n_train]
-        val_pairs   = pairs[n_train:n_train + n_val]
-        test_pairs  = pairs[n_train + n_val:]
-
-        gather = lambda subset: [eid for p in subset for eid in pair2eids[p]]
-        train_eids = torch.tensor(gather(train_pairs), dtype=torch.int64)
-        val_eids   = torch.tensor(gather(val_pairs),   dtype=torch.int64)
-        test_eids  = torch.tensor(gather(test_pairs),  dtype=torch.int64)
-
-        # 2.- Máscaras booleanas
-        # --------------------------
-        num_e = self.graph.num_edges
-        train_mask = torch.zeros(num_e, dtype=torch.bool)
-        val_mask   = torch.zeros(num_e, dtype=torch.bool)
-        test_mask  = torch.zeros(num_e, dtype=torch.bool)
-
-        train_mask[train_eids] = True
-        val_mask[val_eids]     = True
-        test_mask[test_eids]   = True
-
-        self.graph.train_mask = train_mask
-        self.graph.val_mask   = val_mask
-        self.graph.test_mask  = test_mask
-
-        # 3.- Opcional: guardo para sampling
-        # --------------------------
-        if store_eids:
-            self.train_eids = train_eids
-            self.val_eids   = val_eids
-            self.test_eids  = test_eids
-
-        if self.debug:
-            print(f"[split] train={train_mask.sum()}  val={val_mask.sum()}  test={test_mask.sum()}")
-            print("  clases train:", dict(Counter(rel[train_mask].tolist())))
-            print("  clases val:",   dict(Counter(rel[val_mask].tolist())))
-
-        if return_eids:
-            return (train_eids, val_eids, test_eids)
-        return None

@@ -31,7 +31,7 @@ results/*
 *.png
 *.md
 !README.md
-!DOCUMENTATION.md
+DOCUMENTATION.md
 
 # Bytecode de Python
 __pycache__/
