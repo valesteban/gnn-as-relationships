@@ -55,7 +55,6 @@ GLOBAL_CONFIG_E2E = dict(cfg["global_config_endtoend"])   # por partes: GLOBAL_C
 * **Decimales.** Escríbalos con punto (`0.0005`): PyYAML lee `5e-4` como texto.
 * **`split`.** `split_edges_classification` exige `train_size + val_size < 1.0` (el resto es test).
 * Los notebooks ya no leen variables de entorno.
-* Los notebooks de `notebooks/` todavía leen claves que el `config.yaml` actual no tiene (`grafo_antiguo_dir`, `as_graph_dir`, `experimento_dir`) y fallan al cargarlo.
 
 ## Estructura
 
@@ -65,17 +64,17 @@ modules/gnn_models.py      Encoders GCN / GraphSAGE / GAT (2 y 3 capas, variante
 modules/experiment.py      set_seed (reproducibilidad) y save_run (guarda métricas, pesos e historial)
 modules/bgp2vec.py         BGP2Vec (Word2Vec sobre AS_PATHs) con lectura en streaming
 modules/metis_windows.py   METIS para ClusterData (Caso 3) en Windows; todavía no se usa en los notebooks
-modules/graph.py           Pipeline legado multi-snapshot (no usado por los notebooks)
 config.yaml                Configuración central (rutas en /media/vale/KINGSTON/, semilla, hiperparámetros)
-config_nerwito.yaml        Configuración anterior del equipo Windows (rutas en F:/; formato incompatible con los notebooks actuales)
-src/                       LACNIC, API PeeringDB, filtro de topología, utilidades (sin uso desde que se eliminaron los scripts)
+requirements.txt           Versiones fijadas del entorno env312 (torch 2.8.0 CPU + PyG 2.8)
+scripts/correr_pruebas.py  Ejecuta los notebooks por lotes según pruebas.yaml (variantes de hiperparámetros, semillas, splits)
+pruebas.yaml               Definición de las pruebas para scripts/correr_pruebas.py
+CLAUDE.md                  Contexto del proyecto para Claude Code
+DOCUMENTATION.md           Documentación técnica completa
 AS_relationship_inference_end_to_end.ipynb   Entrenamiento end-to-end (encoder + decoder de aristas)
 AS_relationship_inference_por_partes.ipynb   Embeddings (link prediction, regresión, DeepWalk, BGP2Vec) + clasificador de aristas
-notebooks/                 Análisis del grafo, de las RIBs, de atributos y visualización de embeddings.
-                           notebooks/resultados_experimentos.ipynb muestra en tablas los resultados de los dos enfoques
 ```
 
-`scripts/` está vacío. El pipeline de datos anterior (`scripts/1..4_*.py`, `scripts/create_tor_dataset.py`) se eliminó en el commit `4fcb754`, y `scripts/correr_experimento.py` en `d1495d9`. Siguen en el historial de git (el pipeline, también en `main` / `v1.0-dgl`).
+El pipeline de datos anterior (`scripts/1..4_*.py`, `scripts/create_tor_dataset.py`) se eliminó en el commit `4fcb754`, y `scripts/correr_experimento.py` en `d1495d9`. El 2026-11-16 se eliminaron además `modules/graph.py`, `modules/bgp2vec/`, `src/`, `build/`, `config_nerwito.yaml`, los notebooks de análisis de `notebooks/` (leían claves de `config.yaml` que ya no existen) y las figuras de `notebooks/results/`. Todo sigue en el historial de git (el pipeline, también en `main` / `v1.0-dgl`).
 
 ## Instalación
 
@@ -106,7 +105,7 @@ $env:PYTHONHASHSEED = 7   # antes de abrir Jupyter: reproducibilidad de BGP2Vec
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
-Rutas: las de este equipo (`F:/`) quedaron en `config_nerwito.yaml`. Ese archivo tiene el formato anterior y no sirve tal cual con los notebooks actuales (le faltan, entre otras, `comunes.split`, `scheduler` y `clasificador`): hay que pasar sus rutas a `config.yaml`. Limitaciones conocidas en este entorno:
+Las rutas de ese equipo (`F:/`) estaban en `config_nerwito.yaml`, eliminado el 2026-11-16 por tener el formato anterior (sigue en el historial de git): configure `config.yaml` con las rutas locales. Limitaciones conocidas en este entorno:
 * `pyg_lib`, `torch_scatter`, `torch_sparse` y `torch_cluster` no están instaladas; pueden fallar los casos que usan `LinkNeighborLoader` (end-to-end Caso 2), `ClusterData` (Caso 3) y `Node2Vec` (DeepWalk).
 * Para `ClusterData`, `modules/metis_windows.py` (`activar_metis_windows(dll)`) reemplaza el METIS de PyG por una `metis.dll`. Todavía no está conectado al notebook.
 * El Caso 2 del por partes lee `caida_pyg.pt` (el grafo 2022 convertido desde `caida.bin`, formato DGL); la conversión requiere DGL y ese archivo todavía no existe en `F:`.
@@ -118,7 +117,7 @@ Rutas: las de este equipo (`F:/`) quedaron en `config_nerwito.yaml`. Ese archivo
    ```bash
    wget -P /media/vale/KINGSTON/LAB/CAIDA/CAIDA_AS_Relationships/Serial_1/ https://publicdata.caida.org/datasets/as-relationships/serial-1/20260901.as-rel.txt.bz2
    ```
-3. **Etiquetar.** `GNN.label_edges_from_caida` se eliminó de `modules/gnn.py` (cambio sin commit) y los notebooks ya no etiquetan solos. Los grafos de experimento7 ya tienen `gnn_edges_caida.csv`. Para un grafo nuevo hay que recuperar el método desde git (`git show HEAD:modules/gnn.py`). Con él:
+3. **Etiquetar.** `GNN.label_edges_from_caida` se eliminó de `modules/gnn.py` en el commit `4616c28` y los notebooks ya no etiquetan solos. Los grafos de experimento7 ya tienen `gnn_edges_caida.csv`. Para un grafo nuevo hay que recuperar el método desde git (`git show 4616c28~1:modules/gnn.py`). Con él:
    ```python
    GNN(debug=True).label_edges_from_caida(GRAFO_DIR / "gnn_edges.csv",
                                           GNN.caida_file_for_graph(GRAFO_DIR, CAIDA_DIR),  # CAIDA_DIR/AAAAMM01.as-rel.txt.bz2

@@ -24,14 +24,15 @@ results/*
 *.csv
 *.pkl
 *.txt
+!requirements.txt
 *.pth
 *.npy
 *.json
-*.txt
 *.png
 *.md
 !README.md
-DOCUMENTATION.md
+!CLAUDE.md
+!DOCUMENTATION.md
 
 # Bytecode de Python
 __pycache__/
@@ -43,6 +44,3 @@ notebooks/analisis_particion_clustergcn.ipynb
 # Notebook de evaluación de modelos entrenados en otro grafo
 AS_relationship_evaluacion_otro_grafo.ipynb
 
-# Automatización de pruebas (local)
-scripts/correr_pruebas.py
-pruebas.yaml

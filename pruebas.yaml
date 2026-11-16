@@ -1,0 +1,41 @@
+# Pruebas para scripts/correr_pruebas.py
+#   env312/bin/python scripts/correr_pruebas.py pruebas.yaml --dry-run
+#
+# Claves con puntos sobre la config base (deben existir en ella). El valor puede ser un
+# escalar o un dict completo (p. ej. comunes.split o comunes.validacion).
+#   cambios: se aplican a todas las variantes de la prueba
+#   barrido: producto cartesiano -> una variante por combinación
+# Cada variante guarda sus resultados en <experimento.salida>/<experimento.nombre>/pruebas/<prueba>/<variante>/
+
+base: config.yaml
+salida: /media/vale/KINGSTON/LAB/gnn-as-relationships/ejecuciones   # notebooks ejecutados, estado.csv, resumen_pruebas.csv
+
+pruebas:
+  # Media ± std con 5 semillas (cambia split e inicialización)
+  - nombre: semillas
+    notebooks: [end_to_end, por_partes]
+    barrido:
+      comunes.seed: [42, 43, 44, 45, 46]
+
+  # Holdout con distintas proporciones vs K-fold (split_edges_kfold).
+  # Con kfold solo se usa val_size (test = 1/k): las combinaciones que solo cambian
+  # train_size se ejecutan una vez.
+  - nombre: splits
+    notebooks: [end_to_end]
+    barrido:
+      comunes.split:
+        - {train_size: 0.7, val_size: 0.15, balance_mode: proportional}
+        - {train_size: 0.6, val_size: 0.2,  balance_mode: proportional}
+      comunes.validacion:
+        - {tipo: holdout}
+        - {tipo: kfold, k: 5}
+        - {tipo: kfold, k: 10}
+
+  # Hiperparámetros del end-to-end
+  - nombre: lr_hidden
+    notebooks: [end_to_end]
+    cambios:
+      global_config_endtoend.epochs: 200
+    barrido:
+      global_config_endtoend.lr: [0.001, 0.0005]
+      global_config_endtoend.hidden_dim: [128, 256]
