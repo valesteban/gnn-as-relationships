@@ -70,6 +70,26 @@ class GNN:
         self.debug = debug
         self.graph = None
 
+    def set_seed(self,seed=42, deterministic=True):
+        """Fija la semilla de random, numpy, torch (CPU y CUDA) y PyG.
+
+        Con deterministic=True además pide a PyTorch algoritmos deterministas. En
+        CPU los resultados son idénticos entre corridas; en GPU algunas operaciones
+        scatter de PyG no tienen versión determinista y solo emiten un aviso
+        (warn_only), así que pueden variar levemente.
+        """
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch_geometric.seed_everything(seed)
+
+        if deterministic:
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.use_deterministic_algorithms(True, warn_only=True)
+
     def _reverse_relationship_value(self, value):
         """Invierte la relación para la arista en sentido contrario.
 
@@ -654,7 +674,161 @@ class GNN:
             return train_eids, val_eids, test_eids
 
 
-    # TODO: rvisar funcion complta 
+    def split_edges_kfold(self, k=5, fold=0, val_size=0.15, seed=0,
+                          balance_mode="proportional", return_eids=False, store_eids=True):
+        """
+        Split K-fold de aristas para clasificación, SIN fuga entre direcciones opuestas.
+
+        Misma unidad y estratificación que `split_edges_classification`:
+        - Se agrupan eids por par no dirigido (min(u,v), max(u,v)).
+        - Cada par recibe una firma de etiquetas (p.ej. (0,0), (1,2), (2,), ...).
+        - Dentro de cada firma, los pares se barajan con `seed` (la misma permutación
+          para todos los folds) y se reparten en k folds (fold_id = i % k).
+
+        Para el fold `fold`:
+        - test  = pares con fold_id == fold (≈ 1/k de los pares de cada firma).
+        - val   = fracción `val_size` del resto, por firma (barajado con seed + fold),
+                  para early stopping.
+        - train = lo demás.
+
+        Los k conjuntos de test son disjuntos y su unión cubre todas las aristas etiquetadas.
+        Escribe train_mask/val_mask/test_mask (y train_eids/val_eids/test_eids) igual que
+        `split_edges_classification`. `balance_mode` funciona igual que en ese método.
+        """
+        if not (isinstance(k, int) and k >= 2):
+            raise ValueError(f"k debe ser un entero >= 2. Recibido: {k}")
+        if not (isinstance(fold, int) and 0 <= fold < k):
+            raise ValueError(f"fold debe estar entre 0 y k-1 ({k - 1}). Recibido: {fold}")
+        if not (0.0 <= val_size < 1.0):
+            raise ValueError(f"val_size debe estar entre 0 y 1. Recibido: {val_size}")
+        if balance_mode not in {"proportional", "strict_equal"}:
+            raise ValueError(
+                f"balance_mode inválido: {balance_mode}. Usa 'proportional' o 'strict_equal'"
+            )
+
+        rng_folds = random.Random(seed)          # asignación a folds: igual para todos los folds
+        rng_val = random.Random(seed + fold)     # separación de val dentro del fold
+        torch.manual_seed(seed + fold)
+        np.random.seed(seed + fold)
+
+        u, v = self.graph.edge_index[0], self.graph.edge_index[1]
+
+        label_key = next((k_ for k_ in ["edge_label", "label", "relationship", "Relationship"]
+                          if getattr(self.graph, k_, None) is not None), None)
+        if label_key is None:
+            raise KeyError(f"No se encontró etiqueta de arista en el grafo. Claves disponibles: {_edge_keys(self.graph)}")
+
+        rel = getattr(self.graph, label_key).long()
+
+        # Solo aristas con etiqueta válida
+        labeled_eids = torch.where(rel >= 0)[0].tolist()
+
+        # 1) Agrupar por par no dirigido (no leakage)
+        pair2eids = defaultdict(list)
+        for eid in labeled_eids:
+            ui, vi = int(u[eid].item()), int(v[eid].item())
+            pair = (ui, vi) if ui <= vi else (vi, ui)
+            pair2eids[pair].append(eid)
+
+        # 2) Estrato por firma de etiquetas del par
+        signature2pairs = defaultdict(list)
+        for pair, eids in pair2eids.items():
+            sig = tuple(sorted(int(rel[eid].item()) for eid in eids))
+            signature2pairs[sig].append(pair)
+
+        # 3) Folds por firma; val sale del resto del mismo estrato
+        train_pairs, val_pairs, test_pairs = [], [], []
+        for sig in sorted(signature2pairs):
+            pairs = signature2pairs[sig]
+            rng_folds.shuffle(pairs)
+
+            test_sig = [p for i, p in enumerate(pairs) if i % k == fold]
+            rest_sig = [p for i, p in enumerate(pairs) if i % k != fold]
+
+            rng_val.shuffle(rest_sig)
+            n_val = int(round(len(rest_sig) * val_size))
+            # Dejar al menos un par en train cuando haya resto
+            if rest_sig and n_val >= len(rest_sig):
+                n_val = len(rest_sig) - 1
+
+            test_pairs.extend(test_sig)
+            val_pairs.extend(rest_sig[:n_val])
+            train_pairs.extend(rest_sig[n_val:])
+
+        # Mezcla global para no dejar bloques por estrato
+        rng_val.shuffle(train_pairs)
+        rng_val.shuffle(val_pairs)
+        rng_val.shuffle(test_pairs)
+
+        def gather_eids(pairs_subset):
+            return torch.tensor([eid for p in pairs_subset for eid in pair2eids[p]], dtype=torch.long)
+
+        train_eids = gather_eids(train_pairs)
+        val_eids = gather_eids(val_pairs)
+        test_eids = gather_eids(test_pairs)
+
+        # 4) Balance opcional por clase dentro de cada split (igual que split_edges_classification)
+        if balance_mode == "strict_equal":
+            classes_present = sorted(set(int(x) for x in rel[labeled_eids].tolist() if int(x) >= 0))
+
+            def downsample_equal(eids_tensor):
+                if eids_tensor.numel() == 0:
+                    return eids_tensor
+                by_class = {}
+                for c in classes_present:
+                    cls_eids = eids_tensor[rel[eids_tensor] == c]
+                    if cls_eids.numel() > 0:
+                        by_class[c] = cls_eids
+                if len(by_class) < max(2, len(classes_present)):
+                    return eids_tensor
+                target = min(x.numel() for x in by_class.values())
+                if target <= 0:
+                    return eids_tensor
+                selected = []
+                for c in classes_present:
+                    cls_eids = by_class[c]
+                    selected.append(cls_eids[torch.randperm(cls_eids.numel())[:target]])
+                out = torch.cat(selected)
+                return out[torch.randperm(out.numel())]
+
+            train_eids = downsample_equal(train_eids)
+            val_eids = downsample_equal(val_eids)
+            test_eids = downsample_equal(test_eids)
+
+        # 5) Crear máscaras booleanas
+        num_e = self.graph.num_edges
+        for name, eids in [("train_mask", train_eids), ("val_mask", val_eids), ("test_mask", test_eids)]:
+            mask = torch.zeros(num_e, dtype=torch.bool)
+            if eids.numel() > 0:
+                mask[eids] = True
+            setattr(self.graph, name, mask)
+
+        # 6) Guardado opcional
+        if store_eids:
+            self.train_eids = train_eids
+            self.val_eids = val_eids
+            self.test_eids = test_eids
+
+        if self.debug:
+            def dist(eids_tensor):
+                if eids_tensor.numel() == 0:
+                    return {}
+                return dict(Counter(rel[eids_tensor].tolist()))
+
+            print(f"\n[SPLIT K-FOLD - ESTRATIFICADO] fold {fold + 1}/{k}")
+            print(f"Modo balanceo: {balance_mode}")
+            print(f"Etiqueta usada: {label_key}")
+            print(f"Total aristas etiquetadas: {len(labeled_eids)}")
+            print(f"Train: {train_eids.shape[0]} | Val: {val_eids.shape[0]} | Test: {test_eids.shape[0]}")
+            print(f"Distribución Train: {dist(train_eids)}")
+            print(f"Distribución Val:   {dist(val_eids)}")
+            print(f"Distribución Test:  {dist(test_eids)}")
+
+        if return_eids:
+            return train_eids, val_eids, test_eids
+
+
+    # TODO: rvisar funcion complta
     def split_edges_link_prediction(self, train_size: float = 0.8, val_size: float = 0.0,
                                     seed: int = 42, balance_mode=None, train_ratio=None):
         """

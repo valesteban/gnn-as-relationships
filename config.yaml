@@ -26,6 +26,14 @@ comunes:
   split: {train_size: 0.7,
           val_size: 0.15,
           balance_mode: proportional}
+  # Validación del clasificador de aristas (notebook end-to-end). Sección aparte de `split`
+  # porque `split` se pasa como **kwargs a los métodos de split.
+  #   holdout: un solo split train/val/test con `split` (comportamiento por defecto)
+  #   kfold:   k folds por par no dirigido estratificados por firma; test = 1/k de los pares,
+  #            val = split.val_size del resto (early stopping), train = lo demás
+  validacion:
+    tipo: holdout   # holdout | kfold
+    k: 5            # solo con tipo: kfold
   class_weights: true   # pondera la cross-entropy por la inversa de la frecuencia de cada clase en train
   
   

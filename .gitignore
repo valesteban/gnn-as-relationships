@@ -36,3 +36,13 @@ DOCUMENTATION.md
 # Bytecode de Python
 __pycache__/
 *.pyc
+
+# Notebook de análisis de la partición ClusterGCN
+notebooks/analisis_particion_clustergcn.ipynb
+
+# Notebook de evaluación de modelos entrenados en otro grafo
+AS_relationship_evaluacion_otro_grafo.ipynb
+
+# Automatización de pruebas (local)
+scripts/correr_pruebas.py
+pruebas.yaml
