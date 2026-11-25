@@ -23,6 +23,10 @@ rutas:
 comunes:
   seed: 42  # splits, pesos iniciales, dropout, caminatas y orden de mini-batches
   class_names: [P2P, C2P, P2C]
+  # balance_mode: dejar siempre en `proportional`. El split conserva la mezcla natural de clases
+  # (P2P ≈ 66 %, C2P ≈ 17 %, P2C ≈ 17 %) y el desbalance se compensa en el entrenamiento con la
+  # cross-entropy ponderada por clase (`class_weights: true`). `strict_equal` recorta cada split a
+  # igual nº de aristas por clase y no se usa desde 2026-10-17.
   split: {train_size: 0.7,
           val_size: 0.15,
           balance_mode: proportional}

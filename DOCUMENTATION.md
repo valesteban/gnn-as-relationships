@@ -21,6 +21,7 @@ La migración reemplazó únicamente las llamadas a DGL por sus equivalentes en 
 3. [Arquitectura y Decisiones de Implementación](#3-arquitectura-y-decisiones-de-implementación)
 4. [Guía de Ejecución y Pipeline (Step-by-Step)](#4-guía-de-ejecución-y-pipeline-step-by-step)
 5. [Propuestas de Mejora y Deuda Técnica](#5-propuestas-de-mejora-y-deuda-técnica)
+6. [Pendientes](#6-pendientes)
 
 ---
 
@@ -313,11 +314,11 @@ El grafo usado hasta septiembre de 2026 (RIB de 24 h del 1 de marzo, pipeline el
 2. `_normalize_relationship_column`: acepta `'P2P'/'C2P'/'P2C'` o `'0'/'1'/'2'/'-1'`, fuerza `int64` y lanza `ValueError` ante valores desconocidos.
 3. `Data(edge_index=torch.stack([src, dst]), num_nodes=len(df_n))` — asume que `src_id/dst_id` son índices de fila de `df_n`.
 4. `x` = todas las columnas excepto `node_id, asn, country` (`float32`); `edge_label` (`long`); `edge_attr` = `weight` `(E,1)`.
-5. Guarda `self.asn_to_node_id` para `_fill_labels_from_caida_stream_fast`.
+5. Guarda `self.asn_to_node_id` (lo usa `AS_relationship_evaluacion_otro_grafo.ipynb`).
 
 `load_dataset_only_cntrality_attr(...)`: igual, pero las features son solo las columnas estructurales presentes en el CSV, **estandarizadas con z-score**. En el formato nuevo son `degree`, `weighted_degree`, `transit_degree`, `pagerank` y `k_core`; en el antiguo, `weight`, `PageRank`, `degree_centrality`, `betweenness_centrality` y `eigenvector_centrality`. El z-score deja media 0 y desviación 1; las columnas constantes usan std=1. Comentario en el código: sin esto la GNN colapsa por las escalas dispares.
 
-`_fill_labels_from_caida_stream_fast(caida_file)`: alternativa in-memory a `label_edges_from_caida`, que los notebooks no usan. Recorre el `.bz2/.gz/.txt` de CAIDA, etiqueta aristas existentes (`eid_map` dict `(u,v)→eid`), agrega aristas faltantes y crea nodos nuevos con `feat = 0` para ASNs ausentes.
+`_fill_labels_from_caida_stream_fast(caida_file)`, alternativa in-memory a `label_edges_from_caida` que agregaba aristas y nodos faltantes, se eliminó el 2026-11-24 porque nada la llamaba (sigue en git).
 
 Otras utilidades: `add_random_features(dim, std, seed, mode∈{zscore,minmax,uniform})` (control experimental), `remove_low_degree_nodes(degree, iterations)` (poda con `torch_geometric.utils.subgraph` y remapeo de `asn_to_node_id` con los ids originales conservados).
 
@@ -331,6 +332,18 @@ Otras utilidades: `add_random_features(dim, std, seed, mode∈{zscore,minmax,uni
 | `split_nodos(num_nodes, train_size, val_size, seed)` (función del notebook por partes, celda 10) | Regresión nodal | `randperm` de nodos con `Generator` sembrado | dict `{"train", "val", "test"}` de máscaras de nodos |
 
 `split_graph_nodes`, `split_edges_classification_leaky` y `split_edges_classification_v0` se eliminaron de `modules/gnn.py` (cambio sin commit).
+
+**`balance_mode` en cada experimento.** `proportional` conserva la mezcla natural de clases (P2P 0,660 · C2P 0,170 · P2C 0,170) y `strict_equal` recorta cada split a igual cantidad de aristas por clase. Desde 2026-10-17 todo se corre en `proportional` y el desbalance se compensa en el entrenamiento con la cross-entropy ponderada por clase (`class_weights: true`, pesos `n / (C · conteo)` calculados solo con train).
+
+| Período | Notebook | `balance_mode` |
+|---|---|---|
+| hasta 2026-04-21 | `AS_relationship_inference*.ipynb` (versiones iniciales) | no se puede determinar: no pasaban `balance_mode` |
+| 2026-04-21 (`75c0c6c`) | end-to-end, casos 0 a 4 | `strict_equal` en los 5 |
+| 2026-04-21 (`d8779aa`) a 2026-10-15 (`f6b24ee`) | end-to-end | **caso 0: `proportional`** (comentario «usa todos los datos; class_weights compensan»); **casos 1, 2, 3 y 4: `strict_equal`** |
+| desde 2026-10-17 (`ecdf050`) | end-to-end, todos los casos | `proportional`, de `comunes.split.balance_mode` |
+| desde 2026-10-21 (`903bdb7`) | por partes, Etapa 2 | `proportional` (`**P2E_SPLIT`); antes usaba `build_tor_dataset`, con split propio |
+
+Verificado el 2026-11-24 con el disco: las 7 `config.yaml` de `ejecuciones/` dicen `proportional`, y en ninguna de las 781 corridas legibles de `resultados_gnn/experimento7_20250916T0800/` ni de `prueba e2e/` el test está balanceado. Los tests de los casos 0, 1, 2 y 4 salen con 66/17/17 % (138 810 aristas); el del caso 3 (ClusterGCN) con 41–44/28–29/28–29 % por efecto de los clusters, no de `strict_equal`. No queda en disco ningún resultado con `strict_equal`: eran del grafo antiguo de marzo y estaban en `results/`, ya eliminada.
 
 Cifras con `experimento7 / 20260916T0800` + CAIDA `20260901`: 987 964 aristas dirigidas etiquetadas (P2P 659 178 · C2P 164 393 · P2C 164 393); con `proportional` 0.7/0.15 y `seed=42` → train 691 574 / val 148 194 / test 148 196. En link prediction, con `train_size=0.7, val_size=0.15, seed=42` (todas las aristas, también las `-1`) → 935 796 / 200 526 / 200 530 positivos, con igual número de negativos.
 
@@ -572,13 +585,17 @@ Para volver a etiquetar, por ejemplo con otro snapshot CAIDA, borre `gnn_edges_c
 
 **Grafo antiguo de marzo 2026.** Los CSV `*_enriched_tesis.csv` (72 features, ya etiquetados) están en `/media/vale/KINGSTON/TESIS/data_2026/`. Los notebooks fijan los nombres `as_features.csv` y `gnn_edges_caida.csv` en la celda de configuración (celda 12 end-to-end, celda 5 por partes), así que para usarlos hay que editar `nodes_file` y `edges_file` en esa celda.
 
-**Dataset ToR.** `GNN.build_tor_dataset` sigue en `modules/gnn.py`, pero ningún notebook lo usa: la Etapa 2 del enfoque por partes ahora clasifica las aristas del split de `split_edges_classification` (§3.3.2). Para crearlo a mano:
+**Dataset ToR para el benchmark.** `GNN.build_tor_dataset(output_dir, **info)` exporta el split de clasificación actual (`train_mask`, `val_mask`, `test_mask`) con el formato que leen los notebooks de `BenchmarckASRelationships` (Gao, Ruan, ProbLink, TopoScope, BGP2Vec): `x_training.npy`, `x_val.npy` y `x_test.npy` (pares de ASN como texto, forma `(N, 2)`, las dos direcciones de cada enlace), `y_training.npy`, `y_val.npy` e `y_test.npy` (`0 = P2P`, `1 = C2P`, `2 = P2C`) y `tor_resumen.json` (tamaños, clases y `info`). Así el benchmark se evalúa sobre **las mismas aristas de test que la GNN**, sin fuga entre direcciones. Requiere `load_dataset` (usa `asn_to_node_id`) y un split previo.
+
+El notebook end-to-end lo llama en la celda 18, solo en holdout, y lo guarda en `<experimento.salida>/<experimento.nombre>/tor/`; con `correr_pruebas.py` queda en `…/pruebas/<prueba>/<variante>/tor/`. Las 5 variantes de `semillas` ya lo tienen (generado el 2026-11-24 rehaciendo el split con la config de cada variante; coincide con `n_test` y las clases de su `metrics.json`). Para crearlo a mano:
 
 ```python
-GNN().build_tor_dataset(GRAFO_DIR / "gnn_edges_caida.csv", GRAFO_DIR / "results/EnfoquePorPartes/ToR", seed=42)
+g = GNN(); g.load_dataset(GRAFO_DIR / "as_features.csv", GRAFO_DIR / "gnn_edges_caida.csv")
+g.split_edges_classification(seed=42, **cfg["comunes"]["split"])
+g.build_tor_dataset(SALIDA / NOMBRE / "tor", grafo=RUN_TAG, seed=42, split=cfg["comunes"]["split"])
 ```
 
-El dataset antiguo de marzo sigue en `TESIS/data_2026/ToR_data/tor_data_marzo/`.
+Antes (hasta el 2026-11-24) la función hacía su propio corte 80/20 desde `gnn_edges_caida.csv`, distinto del split de la GNN. El dataset que usa hoy el benchmark (`TESIS/data_2026/{x,y}_{training,test}.npy`, CAIDA de marzo de 2026, de su propio `create_tor_dataset.py`) tiene fuga entre direcciones: el 89 % de los enlaces de test también está en train con la etiqueta invertida.
 
 **Prueba de humo** (desde la raíz del repo):
 
@@ -751,7 +768,7 @@ El Caso 2 por partes necesita `InternetGNNData2022/caida/caida_pyg.pt`, que hoy 
 
 | # | Ubicación | Problema | Efecto |
 |---|---|---|---|
-| 1 | `modules/gnn.py:25-35`, `68` | La clase `GNN` está definida **dos veces**; la segunda sombrea a la primera (que inicializaba `train_eids/val_eids/test_eids`). Imports duplicados (`torch`, `random`, `defaultdict`, `Counter`). | Los atributos `*_eids` solo existen tras llamar a `split_edges_classification`; código confuso. |
+| 1 | `modules/gnn.py` | *(Resuelto en parte el 2026-11-24: se eliminó la primera definición.)* La clase `GNN` estaba definida **dos veces**; la segunda sombreaba a la primera (que inicializaba `train_eids/val_eids/test_eids`). Siguen los imports duplicados (`torch`, `random`, `defaultdict`, `Counter`). | Los atributos `*_eids` solo existen tras llamar a `split_edges_classification`; código confuso. |
 | 2 | `modules/gnn.py` (`split_edges_link_prediction`, `split_edges_classification_leaky`, `_v0`) | *(Resuelto)* Buscaban `edata["Relationship"]`, pero `load_dataset` escribe `edge_label`. | `_leaky` y `_v0` se eliminaron, y `split_edges_link_prediction` ahora copia `edge_label` (o `label`/`relationship`/`Relationship`) a los subgrafos positivos. |
 | 3 | `modules/gnn.py` (`split_edges_link_prediction`) | En link prediction se eliminan las aristas de test de `train_g`, pero como el grafo es bidireccional **la arista inversa de cada positivo de test sigue en `train_g`** (y probablemente en `train_pos_g`). | Fuga de información: los AUC de los Casos 0–2 del enfoque por partes están sobreestimados. **Corregido**: el split ahora es por enlace no dirigido (los resultados previos se obtuvieron con la versión con fuga). |
 | 4 | `modules/gnn_models.py:195-201, 229-235, 263-269` | `GCN2L`, `GraphSAGE2L` y `GAT2L` definen `forward()` usando `self.regressor`, que **no existe** en las clases 2L. | `AttributeError` al usar modelos 2L para regresión nodal. El notebook por partes lo evita: `node_regression_train` asigna `model.regressor` antes de entrenar. |
@@ -799,7 +816,6 @@ El Caso 2 por partes necesita `InternetGNNData2022/caida/caida_pyg.pt`, que hoy 
 * Ejecutar en GPU y usar `torch.autocast` (AMP) para el decoder y las capas lineales; considerar `torch.compile` en PyTorch ≥ 2.3.
 * Evaluar en validación cada *k* épocas en lugar de cada época (hoy cada época implica dos `encode` completos).
 * `split_edges_classification` construye `pair2eids` con bucles Python sobre 660 k aristas; vectorizar con `torch.minimum/maximum` + `torch.unique(return_inverse=True)`.
-* `_fill_labels_from_caida_stream_fast` construye un `dict` Python de 800 k entradas y actualiza `edata['label'][eid]` elemento a elemento; usar `g.edge_ids(u, v, return_uv=True)` vectorizado y una sola asignación con máscara.
 
 **Grafos a gran escala y memoria**
 
@@ -838,3 +854,63 @@ El Caso 2 por partes necesita `InternetGNNData2022/caida/caida_pyg.pt`, que hoy 
 * **Calibración y explicabilidad**: temperatura sobre los logits, `GNNExplainer` para identificar qué vecinos/atributos determinan una predicción C2P.
 * **Baselines clásicos**: Gao, AS-Rank, ProbLink y un `XGBoost` sobre features de par (`[x_u ‖ x_v ‖ grado, peso]`) para cuantificar la ganancia real de la GNN.
 * **Ablaciones sistemáticas**: PeeringDB vs centralidades vs ambos, `edge_feat` on/off, profundidad 1–4, `num_heads`, pesos de clase, `balance_mode`, automatizadas sobre las funciones de entrenamiento y `config.yaml`.
+
+---
+
+## 6. Pendientes
+
+Estado al 2026-11-24. Cada punto dice qué falta, por qué importa y dónde está. Lo urgente va primero.
+
+### 6.1 Datos y entorno
+
+| # | Pendiente | Por qué | Dónde |
+|---|---|---|---|
+| 1 | **Respaldar el disco `KINGSTON`** y revisarlo con `sudo smartctl -a /dev/sda` | El sector 783 281 152 no se puede leer (error de E/S repetible). Afecta a `resultados_gnn/prueba e2e/end_to_end/caso2_neighbor/`, una prueba vieja; lo de `experimento7_20250916T0800/` se lee bien. Copiar `resultados_gnn/` y `ejecuciones/` (≈ 4,2 GB) | `/media/vale/KINGSTON/LAB/gnn-as-relationships/` |
+| 2 | Convertir `caida.bin` (DGL) a `caida_pyg.pt` | Sin ese archivo el notebook por partes lanza `FileNotFoundError` en el caso 2 y no corren los casos 3, 4, 5.1 y 5.2 | `InternetGNNData2022/caida/` · por partes, celda 36 |
+| 3 | Arreglar los lanzadores de `env312/bin/` (`jupyter`, `jupyter-lab`, …) | Apuntan a la ruta anterior del repositorio (`…/LABORATORIO/gnn-as-relationships/`). Mientras tanto: `env312/bin/python -m jupyterlab`. El kernel `env312` se volvió a registrar el 2026-11-13 | `env312/bin/` |
+| 4 | RIB de BGP2Vec de la misma fecha que el grafo | `rutas.rib_file_bgp2vec` usa marzo de 2026 (`FIXME`) para un grafo de septiembre de 2025 | `config.yaml` |
+| 5 | CAIDA de septiembre de 2019 a 2024 | Necesario para etiquetar los grafos 2018–2024 y extender la validación temporal. Hay que recuperar `label_edges_from_caida` (en git, `d1495d9`) | `CAIDA_AS_Relationships/Serial_1/` |
+
+### 6.2 Barrido de `pruebas.yaml`
+
+| # | Pendiente | Por qué | Dónde |
+|---|---|---|---|
+| 6 | Completar `splits` 0,7/0,15 · K-fold 5 | Se cortó el 2026-11-18 a las 23:43 con 236 de 240 modelos (faltan GAT2L, GCN3L, GraphSAGE3L y GAT3L con Bilinear, fold 4, caso 4). No quedó en `estado.csv`, así que `--reanudar` la repite entera (≈ 8–9 h) | `ejecuciones/estado.csv` |
+| 7 | Correr las 8 ejecuciones que no empezaron | `splits` K-fold 10 (0,7/0,15), y holdout, K-fold 5 y K-fold 10 (0,6/0,2); las 4 variantes de `lr_hidden` | `pruebas.yaml` |
+| 8 | Marcar `ok` (o quitar `por_partes` de `semillas`) en las semillas 45 y 46 | Siguen en `error` por el caso 2; con `--reanudar` se vuelven a correr (≈ 2,6 h cada una) sin resultado nuevo mientras falte `caida_pyg.pt` | `ejecuciones/estado.csv` |
+| 9 | Generar `resumen_pruebas.csv` | Se escribe al terminar todas las pruebas y la última sesión se cortó antes | `ejecuciones/` |
+| 10 | Revisar el diseño de `pruebas.yaml` | El holdout 0,7/0,15 de `splits` repite exactamente `semillas__seed-42`. K-fold con semilla fija mide solo la varianza de la partición (≈ 4 veces menor que la de semillas): conviene agregar `comunes.seed` al barrido. `hidden_dim` no cambia los GAT (usan `gat_hidden_dim`): en `lr_hidden` hay 32 corridas repetidas | `pruebas.yaml` |
+
+### 6.3 Código que afecta resultados
+
+| # | Pendiente | Por qué | Dónde |
+|---|---|---|---|
+| 11 | Corregir `features_arista` y repetir la Etapa 2 de por partes | `nodo_dst = embeddings[edge_index[0]]` toma otra vez el nodo de origen: el clasificador nunca ve el destino. Afecta a todas las cifras por partes | por partes, celda 16 |
+| 12 | Descomentar el `save_run` del caso 0 por partes | Hoy el clasificador se entrena pero no se guarda; sus métricas solo están en el texto de los notebooks ejecutados | por partes, celda 30 |
+| 13 | Unificar `Caso0/Caso1/Caso2` con `caso0/caso1/caso2` | La Etapa 1 guarda con mayúscula y `save_run` con minúscula. En Windows es la misma carpeta; en Linux, dos | por partes, celdas 30, 34 y 38 |
+| 14 | Evaluar ClusterGCN sobre todo el test e igualar el presupuesto del caso 2 | El caso 3 evalúa ≈ 1/3 del test; el caso 2 corre 10 épocas de mini-batch frente a 300 full-batch | end-to-end, celdas 8, 9 y 31 |
+| 15 | Sincronizar el notebook end-to-end con la copia de Windows | La copia que corre en Windows importa `modules/metis_windows.py` en la celda 2 (sin eso el caso 3 no corre allí); la del repositorio no la tiene | end-to-end, celda 2 |
+
+### 6.4 Benchmark (`BenchmarckASRelationships`)
+
+| # | Pendiente | Por qué | Dónde |
+|---|---|---|---|
+| 16 | Que los notebooks del benchmark lean `…/pruebas/semillas/<variante>/tor/` | Hoy leen `TESIS/data_2026/{x,y}_{training,test}.npy`, de CAIDA de marzo de 2026, con fuga entre direcciones (89 % de los enlaces de test también en train) y otro test que la GNN. El ToR nuevo (§4.3) usa el mismo split que la GNN | `BenchmarckASRelationships/*/*.ipynb` (`PATH`, `DATA`) |
+| 17 | Rutas BGP del 2025-09-16 para Gao, Ruan, ProbLink y TopoScope | Infieren desde rutas en texto y hoy usan el RIB de marzo de 2026. La carpeta del grafo solo tiene aristas agregadas (`parciales/`), no los AS_PATH | `as-level-internet-graph` |
+| 18 | Exportar ToR también en K-fold | `build_tor_dataset` solo se llama en holdout; para comparar fold a fold habría que exportar `tor/fold<i>/` | end-to-end, celdas 18 y 20 |
+
+### 6.5 Setting inductivo (plan, sin implementar)
+
+| # | Pendiente | Detalle |
+|---|---|---|
+| 19 | Split por AS nuevos | `GNN.split_nodes_inductive(frac_nodos_test, frac_nodos_val, frac_nodos_train, frac_etiquetas, seed)` con `msg_train_mask`/`msg_val_mask`; `comunes.inductivo` en `config.yaml`; 4 líneas en `entrenar_modelo`; casos 2 y 3 omitidos; pruebas `inductivo_etiquetas` e `inductivo_estructura` |
+| 20 | Entrenar con un grafo y testear con otro de otra fecha (2025 ↔ 2026) | `comunes.temporal.grafo_test_dir`, `GNN.mascaras_temporales` (subconjuntos `todos`, `as_nuevos`, `enlaces_nuevos`, `conocidos`, `cambio_relacion`) y la línea base de persistencia. El 77 % de los enlaces de 2026 ya existía en 2025. `AS_relationship_evaluacion_otro_grafo.ipynb` (ignorado por git) ya hace una evaluación entre grafos sin guardar resultados |
+
+### 6.6 Documentación y repositorio
+
+| # | Pendiente | Detalle |
+|---|---|---|
+| 21 | Actualizar §2 de este documento | El árbol y la tabla de estado todavía listan `modules/graph.py`, `modules/bgp2vec/`, `src/`, `config_nerwito.yaml` y `scripts/` vacío; `metis_windows.py` aparece "sin conectar" aunque la copia de Windows lo usa |
+| 22 | Prueba de humo de `CLAUDE.md` | Las cifras son del grafo 2026-09-16; `config.yaml` usa el de 2025-09-16 (85 522 nodos; holdout 647 790 / 138 812 / 138 810) |
+| 23 | Commit y push | Los cambios del 2026-11-24 (limpieza de funciones sin uso, `build_tor_dataset` nuevo, esta sección) están sin commit; el commit `a008fb4` (`.gitignore`) no está en GitHub |
+| 24 | `balance_mode` | Nada pendiente de código: todo corre en `proportional`. `strict_equal` sigue disponible en `split_edges_classification` y `split_edges_kfold`, pero ningún experimento lo usa desde 2026-10-17 |

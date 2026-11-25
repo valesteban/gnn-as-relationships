@@ -39,3 +39,14 @@ pruebas:
     barrido:
       global_config_endtoend.lr: [0.001, 0.0005]
       global_config_endtoend.hidden_dim: [128, 256]
+
+  # Hiperparámetros de la Etapa 1 del por partes (la GNN que genera los embeddings).
+  # No cambia los del clasificador de la Etapa 2 (clasificador.lr / clasificador.hidden).
+  # Ojo: hidden_dim no afecta a los GAT (usan gat_hidden_dim / gat_out_dim).
+  - nombre: lr_hidden_pp
+    notebooks: [por_partes]
+    cambios:
+      global_config_por_partes.epochs: 200
+    barrido:
+      global_config_por_partes.lr: [0.001, 0.0005]
+      global_config_por_partes.hidden_dim: [128, 256]

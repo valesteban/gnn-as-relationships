@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from collections import Counter, defaultdict
-from tqdm import tqdm
 import random
 import torch
 import numpy as np
@@ -22,37 +21,8 @@ from torch_geometric.utils import degree as pyg_degree, subgraph
 
 TOR_LABELS_DICT = {'P2P':0, 'C2P': 1,'P2C': 2}
 
-class GNN:
-    def __init__(self, debug=False):
-        self.debug = debug
-        self.graph = None
-
-        # Atributos opcionales para almacenar edge IDs después de split
-        # (se asignan en split_edges_classification si store_eids=True)
-        self.train_eids = None
-        self.val_eids = None
-        self.test_eids = None
-
 import pandas as pd
 import torch
-
-
-def _edge_ids(edge_index: torch.Tensor, num_nodes: int, u: torch.Tensor, v: torch.Tensor):
-    """Devuelve, para cada par (u[i], v[i]), el id de la arista u->v o -1 si no existe.
-
-    Reemplaza a `g.has_edges_between` / `g.edge_ids` de DGL. Si hay aristas
-    duplicadas se devuelve la primera aparición.
-    """
-    key_all = edge_index[0].long() * num_nodes + edge_index[1].long()
-    order = torch.argsort(key_all, stable=True)
-    key_sorted = key_all[order]
-    key_q = u.long() * num_nodes + v.long()
-    pos = torch.searchsorted(key_sorted, key_q)
-    pos_c = pos.clamp(max=key_sorted.numel() - 1)
-    found = (pos < key_sorted.numel()) & (key_sorted[pos_c] == key_q)
-    eids = torch.full_like(key_q, -1)
-    eids[found] = order[pos_c[found]]
-    return eids
 
 
 def _edge_keys(data: Data):
@@ -69,26 +39,6 @@ class GNN:
     def __init__(self, debug=False):
         self.debug = debug
         self.graph = None
-
-    def set_seed(self,seed=42, deterministic=True):
-        """Fija la semilla de random, numpy, torch (CPU y CUDA) y PyG.
-
-        Con deterministic=True además pide a PyTorch algoritmos deterministas. En
-        CPU los resultados son idénticos entre corridas; en GPU algunas operaciones
-        scatter de PyG no tienen versión determinista y solo emiten un aviso
-        (warn_only), así que pueden variar levemente.
-        """
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch_geometric.seed_everything(seed)
-
-        if deterministic:
-            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-            torch.use_deterministic_algorithms(True, warn_only=True)
 
     def _reverse_relationship_value(self, value):
         """Invierte la relación para la arista en sentido contrario.
@@ -176,7 +126,7 @@ class GNN:
         dst = torch.as_tensor(df_e['dst_id'].to_numpy(dtype='int64'))
         self.graph = Data(edge_index=torch.stack([src, dst]), num_nodes=len(df_n))
 
-        # Guardar mapeo asn → node_id para poder usar _fill_labels_from_caida_stream_fast
+        # Guardar mapeo asn → node_id (lo usa AS_relationship_evaluacion_otro_grafo.ipynb)
         if 'asn' in df_n.columns:
             self.asn_to_node_id = dict(zip(df_n['asn'].astype(int), df_n['node_id'].astype(int)))
         else:
@@ -272,122 +222,6 @@ class GNN:
             if hasattr(self.graph, 'edge_attr') and self.graph.edge_attr is not None:
                 print(f"Edge features: {self.graph.edge_attr.shape[1]} dim")
 
-    def _fill_labels_from_caida_stream_fast(self, caida_file: str):
-        """Etiqueta aristas existentes con relaciones CAIDA y agrega las que faltan.
-
-        Para aristas CAIDA que no están en el grafo:
-          - Si ambos nodos ya existen: agrega solo la arista.
-          - Si algún ASN no existe en el grafo: crea el nodo con features=0
-            y luego agrega la arista.
-
-        Requiere que load_dataset() haya guardado self.asn_to_node_id.
-        """
-        if not hasattr(self, 'asn_to_node_id') or self.asn_to_node_id is None:
-            raise RuntimeError(
-                "asn_to_node_id no disponible. "
-                "Llama a load_dataset() con nodes_csv que contenga columna 'asn'."
-            )
-
-        g = self.graph
-
-        # Copia mutable del mapeo asn → node_id
-        asn_to_nid = dict(self.asn_to_node_id)
-        next_nid   = g.num_nodes
-        feat_dim      = (g.x.shape[1]
-                         if getattr(g, 'x', None) is not None else 0)
-        edge_feat_dim = (g.edge_attr.shape[1]
-                         if getattr(g, 'edge_attr', None) is not None else 0)
-
-        # 1.- Inicializar labels si no existen (−1 = sin etiquetar)
-        if getattr(g, 'edge_label', None) is None:
-            g.edge_label = torch.full(
-                (g.num_edges,), -1, dtype=torch.long
-            )
-
-        # 2.- Diccionario rápido (node_id_u, node_id_v) → eid
-        u_all, v_all = g.edge_index[0].tolist(), g.edge_index[1].tolist()
-        eid_map = {(u_all[i], v_all[i]): i
-                   for i in range(g.num_edges)}
-
-        # Buffers para elementos nuevos
-        buffer_src, buffer_dst, buffer_lbl = [], [], []
-        new_node_asns: list[int] = []   # ASNs que necesitan nodo nuevo
-
-        # 3.- Elegir opener según extensión
-        opener = (bz2.open  if caida_file.endswith(".bz2") else
-                  gzip.open if caida_file.endswith(".gz")  else
-                  open)
-
-        # 4.- Recorrer archivo CAIDA
-        with opener(caida_file, "rt") as f:
-            for line in tqdm(f, desc="Etiquetando CAIDA"):
-                if line.startswith("#") or not line.strip():
-                    continue
-
-                src_asn, dst_asn, rel = line.strip().split("|")
-                src_asn, dst_asn = int(src_asn), int(dst_asn)
-
-                if rel == "0":          # P2P simétrico
-                    pares     = [(src_asn, dst_asn), (dst_asn, src_asn)]
-                    etiquetas = [0, 0]
-                else:                   # -1: provider→customer / customer→provider
-                    pares     = [(src_asn, dst_asn), (dst_asn, src_asn)]
-                    etiquetas = [2, 1]  # P2C=2, C2P=1
-
-                for (u_asn, v_asn), lbl in zip(pares, etiquetas):
-                    # Convertir ASN → node_id, creando nodo nuevo si es necesario
-                    if u_asn not in asn_to_nid:
-                        asn_to_nid[u_asn] = next_nid
-                        new_node_asns.append(u_asn)
-                        next_nid += 1
-                    if v_asn not in asn_to_nid:
-                        asn_to_nid[v_asn] = next_nid
-                        new_node_asns.append(v_asn)
-                        next_nid += 1
-
-                    u_nid = asn_to_nid[u_asn]
-                    v_nid = asn_to_nid[v_asn]
-
-                    eid = eid_map.get((u_nid, v_nid))
-                    if eid is not None:
-                        # Arista ya existe → actualizar etiqueta
-                        g.edge_label[eid] = lbl
-                    else:
-                        # Arista no existe → agregar al buffer
-                        buffer_src.append(u_nid)
-                        buffer_dst.append(v_nid)
-                        buffer_lbl.append(lbl)
-
-        # 5.- Agregar nodos nuevos (ASNs que no estaban en el grafo)
-        if new_node_asns:
-            n_new = len(new_node_asns)
-            if feat_dim > 0:
-                new_feat = torch.zeros(n_new, feat_dim, dtype=torch.float32)
-                g.x = torch.cat([g.x, new_feat], dim=0)
-            g.num_nodes = g.num_nodes + n_new
-            if self.debug:
-                print(f"[CAIDA] Añadidos {n_new} nodos nuevos (ASNs sin info de PeeringDB → feat=0)")
-
-        # 6.- Agregar aristas nuevas
-        if buffer_src:
-            n_new_edges = len(buffer_src)
-            new_ei = torch.stack([torch.tensor(buffer_src, dtype=torch.long),
-                                  torch.tensor(buffer_dst, dtype=torch.long)])
-            g.edge_index = torch.cat([g.edge_index, new_ei], dim=1)
-            g.edge_label = torch.cat([g.edge_label, torch.tensor(buffer_lbl, dtype=torch.long)])
-            if edge_feat_dim > 0:
-                g.edge_attr = torch.cat(
-                    [g.edge_attr, torch.zeros(n_new_edges, edge_feat_dim, dtype=torch.float32)], dim=0)
-            if self.debug:
-                print(f"[CAIDA] Añadidas {len(buffer_src)} aristas nuevas al grafo")
-
-        # 7.- Actualizar mapeo y resumen
-        self.asn_to_node_id = asn_to_nid
-
-        if self.debug:
-            c = Counter(g.edge_label.tolist())
-            print(f"[CAIDA] Conteo final de etiquetas 0/1/2/−1 → {c}")
-
     def _read_caida_relationships(self, caida_file):
         """Lee un archivo CAIDA AS-Relationships (serial-1).
 
@@ -447,58 +281,49 @@ class GNN:
         return caida_file
 
     # FIXME: guarad mas caras para bnchmark, pro s supon qu como socupa sd todas las vcs qcro las mascaras dbriaan sr iguals?
-    def build_tor_dataset(self, edges_csv, output_dir, test_size=0.2, seed=42):
-        """Crea el dataset ToR del clasificador ANN (enfoque por partes) desde un CSV etiquetado.
+    def build_tor_dataset(self, output_dir, **info):
+        """Exporta el split de clasificación actual como dataset ToR para el benchmark.
 
-        Usa los enlaces con relationship != -1 de edges_csv (p. ej. gnn_edges_caida.csv),
-        así las etiquetas son del mismo mes que el grafo. El split train/test se hace
-        por enlace no dirigido y estratificado por etiqueta, de modo que las dos
-        direcciones de un enlace quedan en el mismo split. Cada enlace aporta las dos
-        direcciones, con la etiqueta invertida en la segunda (mismo formato que el
-        antiguo scripts/create_tor_dataset.py).
+        Usa train_mask / val_mask / test_mask de split_edges_classification (o de
+        split_edges_kfold), así los métodos de BenchmarckASRelationships se evalúan
+        sobre las mismas aristas de test que la GNN. Cada arista dirigida del split es
+        una fila: las dos direcciones de un enlace quedan en el mismo conjunto y con
+        etiquetas inversas, sin fuga entre train y test.
 
-        Escribe en output_dir: x_training.npy / x_test.npy (pares de ASN como strings,
-        forma (N, 2)) e y_training.npy / y_test.npy (0 = P2P, 1 = C2P, 2 = P2C).
-        Devuelve un resumen con los tamaños y la distribución de clases.
+        Escribe en output_dir: x_training.npy, x_val.npy y x_test.npy (pares de ASN como
+        strings, forma (N, 2)); y_training.npy, y_val.npy e y_test.npy (0 = P2P, 1 = C2P,
+        2 = P2C); y tor_resumen.json con los tamaños, la distribución de clases y `info`
+        (p. ej. grafo, seed y split). Requiere un grafo cargado con load_dataset (mapeo
+        asn → node_id) y un split previo. Devuelve el resumen.
         """
-        from sklearn.model_selection import train_test_split
+        g = self.graph
+        if getattr(g, "test_mask", None) is None:
+            raise RuntimeError("Falta el split: llamar antes a split_edges_classification o split_edges_kfold")
+        if not getattr(self, "asn_to_node_id", None):
+            raise RuntimeError("Falta asn_to_node_id: cargar el grafo con load_dataset")
 
-        df_e = pd.read_csv(edges_csv, usecols=["src_asn", "dst_asn", "relationship"])
-        df_e = df_e[df_e["relationship"] != -1]
-
-        pairs = df_e[["src_asn", "dst_asn"]].to_numpy()
-        labels = df_e["relationship"].to_numpy()
-        idx_train, idx_test = train_test_split(
-            np.arange(len(df_e)), test_size=test_size, random_state=seed, stratify=labels
-        )
-
-        def both_directions(idx):
-            x = np.concatenate([pairs[idx], pairs[idx][:, ::-1]]).astype(str)
-            y = np.concatenate([labels[idx],
-                                [self._reverse_relationship_value(int(v)) for v in labels[idx]]])
-            return x, y.astype(np.int64)
-
-        x_train, y_train = both_directions(idx_train)
-        x_test, y_test = both_directions(idx_test)
+        asn = np.zeros(g.num_nodes, dtype=np.int64)            # node_id → ASN
+        asn[np.fromiter(self.asn_to_node_id.values(), dtype=np.int64)] = \
+            np.fromiter(self.asn_to_node_id.keys(), dtype=np.int64)
+        ei = g.edge_index.cpu().numpy()
+        y_all = g.edge_label.long().cpu().numpy()
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        np.save(output_dir / "x_training.npy", x_train)
-        np.save(output_dir / "x_test.npy", x_test)
-        np.save(output_dir / "y_training.npy", y_train)
-        np.save(output_dir / "y_test.npy", y_test)
-
-        resumen = {
-            "edges_csv": str(edges_csv),
-            "enlaces_etiquetados": len(df_e),
-            "train": len(y_train),
-            "test": len(y_test),
-            "dist_train": {int(k): int(v) for k, v in Counter(y_train.tolist()).items()},
-            "dist_test": {int(k): int(v) for k, v in Counter(y_test.tolist()).items()},
-            "seed": seed,
-        }
+        resumen = {**info, "num_nodes": int(g.num_nodes), "num_edges": int(g.num_edges)}
+        for nombre, mask in [("training", g.train_mask), ("val", g.val_mask), ("test", g.test_mask)]:
+            m = mask.bool().cpu().numpy()
+            x = asn[ei[:, m]].T.astype(f"<U{len(str(asn.max()))}")   # ASN como texto, mismo formato que el ToR antiguo
+            y = y_all[m].astype(np.int64)
+            np.save(output_dir / f"x_{nombre}.npy", x)
+            np.save(output_dir / f"y_{nombre}.npy", y)
+            resumen[nombre] = {"aristas": int(m.sum()),
+                               "dist": {int(k): int(v) for k, v in sorted(Counter(y.tolist()).items())}}
+        with open(output_dir / "tor_resumen.json", "w", encoding="utf-8") as f:
+            json.dump(resumen, f, indent=2, ensure_ascii=False, default=str)
         if self.debug:
-            print(f"[ToR] {resumen}")
+            print(f"[ToR] {output_dir}: train {resumen['training']['aristas']} | "
+                  f"val {resumen['val']['aristas']} | test {resumen['test']['aristas']}")
         return resumen
 
 
